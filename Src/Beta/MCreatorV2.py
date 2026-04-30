@@ -50,11 +50,10 @@ except Exception:
 	HAS_CRYPTO = False
 
 
-VERSION = "3.3.7B"
-APP_BUILD = "337B"
+VERSION = "3.3.7.1B"
 
-UPDATE_CHANNELS = ("main", "beta")
-UPDATE_MANIFEST_PATH_DEFAULT = "updates/manifest.json"
+UPDATE_CHANNELS = ("Main", "Beta")
+UPDATE_MANIFEST_PATH_DEFAULT = "Updates"
 UPDATE_PRIVATE_REDEEM_URL_DEFAULT = ""
 UPDATE_PRIVATE_MANIFEST_URL_DEFAULT = ""
 
@@ -11860,12 +11859,12 @@ DEFAULT_CONFIG = {
 	"font_size": 9,
 	"save_interval": 5,
 	"auto_if": True,
-	"update_channel": "main",
-	"update_owner": "",
-	"update_repo": "",
+	"update_channel": "Main",
+	"update_owner": "NurarihyonMaou",
+	"update_repo": "MenuCreator",
 	"update_manifest_path": UPDATE_MANIFEST_PATH_DEFAULT,
-	"update_main_branch": "main",
-	"update_beta_branch": "beta",
+	"update_main_branch": "Main",
+	"update_beta_branch": "Beta",
 	"update_private_code": "",
 	"update_private_redeem_url": UPDATE_PRIVATE_REDEEM_URL_DEFAULT,
 	"update_private_manifest_url": UPDATE_PRIVATE_MANIFEST_URL_DEFAULT,
@@ -11982,14 +11981,29 @@ def init_app(cfg):
 
 # ---------------- UPDATE MANAGER ----------------
 
-def parse_version_build(version_text: str) -> int:
-	digits = re.findall(r"\d+", version_text or "")
-	if not digits:
-		return 0
-	try:
-		return int("".join(digits))
-	except Exception:
-		return 0
+SUFFIX_PRIORITY = {
+	"hotfix": 4,
+	"": 3,
+    "b": 2,
+    "beta": 1,
+    "alpha": 0,
+}
+
+
+def parse_version_build(v: str):
+	if not v:
+		return (0, 0, 0, 0)
+
+	nums = re.findall(r"\d+", v)
+	nums = list(map(int, nums[:3]))
+
+	while len(nums) < 3:
+		nums.append(0)
+
+	suffix = re.findall(r"[A-Za-z]+$", v)
+	suffix = suffix[0].lower() if suffix else ""
+
+	return (*nums, SUFFIX_PRIORITY.get(suffix, 3))
 
 
 def sha256_file(path: str, chunk_size: int = 1024 * 1024) -> str:
@@ -12088,9 +12102,9 @@ def build_public_manifest_url(cfg: dict, channel: str) -> str:
 	branch = (cfg.get(f"update_{channel}_branch") or channel).strip()
 
 	if not owner or not repo:
-		raise ValueError("GitHub owner/repo are not set in Settings")
+		raise ValueError("GitHub Owner/Repo are not set in Settings")
 
-	return f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{manifest_path}"
+	return f"https://raw.githubusercontent.com/{owner}/{repo}/refs/heads/main/{manifest_path}/{branch}/Manifest.json"
 
 
 def current_install_target() -> str:
@@ -12098,7 +12112,7 @@ def current_install_target() -> str:
 		return os.path.abspath(sys.executable)
 	if ALLOW_DEV_UPDATES and sys.argv and os.path.splitext(sys.argv[0])[1].lower() == ".py":
 		return os.path.abspath(sys.argv[0])
-	raise RuntimeError("Updater disabled in dev mode")
+	raise RuntimeError("Updater Disabled in Dev Mode")
 
 
 def download_file_with_progress(url: str, destination: str, progress_cb=None) -> str:
@@ -12134,16 +12148,15 @@ def redeem_private_update_code(cfg: dict, code: str) -> dict:
 	redeem_url = (cfg.get("update_private_redeem_url") or "").strip()
 	assert_https(redeem_url)
 	if not redeem_url:
-		raise ValueError("Private redeem URL is empty")
+		raise ValueError("Private Redeem URL is Empty")
 	if not code.strip():
-		raise ValueError("Private code is empty")
+		raise ValueError("Private Code is Empty")
 
 	payload = json.dumps({
 		"app": "MenuCreator",
 		"version": VERSION,
-		"build": APP_BUILD,
 		"code": code.strip(),
-		"channel": cfg.get("update_channel", "main"),
+		"channel": cfg.get("update_channel", "Main"),
 	}).encode("utf-8")
 
 	req = Request(
@@ -12159,14 +12172,14 @@ def redeem_private_update_code(cfg: dict, code: str) -> dict:
 		data = json.loads(resp.read().decode("utf-8"))
 
 	if not isinstance(data, dict):
-		raise ValueError("Private redeem response is not JSON object")
+		raise ValueError("Private Redeem Response is not JSON Object")
 	return data
 
 
 def fetch_update_manifest(cfg: dict, channel: str) -> tuple[dict, str]:
-	channel = (channel or "main").lower().strip()
+	channel = (channel or "Main").strip()
 	if channel not in UPDATE_CHANNELS and channel != "private":
-		channel = "main"
+		channel = "Main"
 
 	private_code = (cfg.get("update_private_code") or "").strip()
 	private_url = (cfg.get("update_private_manifest_url") or "").strip()
@@ -12177,12 +12190,12 @@ def fetch_update_manifest(cfg: dict, channel: str) -> tuple[dict, str]:
 		if not manifest_url and redeemed.get("manifest"):
 			manifest = redeemed["manifest"]
 			if not isinstance(manifest, dict):
-				raise ValueError("Private redeem returned non-object manifest")
+				raise ValueError("Private Redeem returned non-Object Manifest")
 			if "signature" in manifest:
 				verify_manifest_signature(manifest)
 			return manifest, ""
 		if not manifest_url:
-			raise ValueError("Private build unlocked, but no manifest_url returned")
+			raise ValueError("Private Build Unlocked, but no Manifest_Url Returned")
 		assert_https(manifest_url)
 		manifest = fetch_json_url(manifest_url)
 		if "signature" in manifest:
@@ -12193,6 +12206,7 @@ def fetch_update_manifest(cfg: dict, channel: str) -> tuple[dict, str]:
 		return manifest, manifest_url
 
 	manifest_url = build_public_manifest_url(cfg, channel)
+
 	assert_https(manifest_url)
 	manifest = fetch_json_url(manifest_url)
 	if "signature" in manifest:
@@ -12203,16 +12217,7 @@ def fetch_update_manifest(cfg: dict, channel: str) -> tuple[dict, str]:
 	return manifest, manifest_url
 
 
-def manifest_is_newer(local_build: int, manifest: dict) -> bool:
-	remote_build = manifest.get("build")
-	try:
-		remote_build = int(remote_build)
-	except Exception:
-		remote_build = 0
-
-	if remote_build > 0:
-		return remote_build > local_build
-
+def manifest_is_newer(local_build: dict, manifest: dict) -> bool:
 	remote_version = parse_version_build(str(manifest.get("version", "")))
 	return remote_version > local_build
 
@@ -12274,17 +12279,17 @@ def auto_check_updates_on_startup(parent, cfg):
 		return
 
 	try:
-		manifest, _ = fetch_update_manifest(cfg, cfg.get("update_channel", "main"))
+		manifest, _ = fetch_update_manifest(cfg, cfg.get("update_channel", "Main"))
 		if manifest_is_newer(parse_version_build(VERSION), manifest):
 			remote_version = manifest.get("version", "unknown")
-			remote_build = manifest.get("build", "?")
+
 			QMessageBox.information(
 				parent,
 				"Update Available",
-				f"An update is available on startup: {remote_version} (build {remote_build})"
+				f"An Update is Available on Startup: {remote_version}"
 			)
 	except Exception as e:
-		logger.info(f"Startup update check skipped/failed: {e}")
+		logger.info(f"Startup Update Check skipped/failed: {e}")
 
 
 # ---------------- SETTINGS DIALOG ----------------
@@ -12361,8 +12366,8 @@ class SettingsDialog(QDialog):
 		layout.addWidget(update_group)
 
 		self.update_channel = QComboBox()
-		self.update_channel.addItems(["main", "beta"])
-		self.update_channel.setCurrentText(cfg.get("update_channel", "main"))
+		self.update_channel.addItems(["Main", "Beta"])
+		self.update_channel.setCurrentText(cfg.get("update_channel", "Main"))
 		update_layout.addRow("Channel:", self.update_channel)
 
 		self.update_owner = QLineEdit(cfg.get("update_owner", ""))
@@ -12469,12 +12474,11 @@ class SettingsDialog(QDialog):
 		self._sync_update_cfg()
 
 		try:
-			manifest, manifest_url = fetch_update_manifest(self.cfg, self.cfg.get("update_channel", "main"))
+			manifest, manifest_url = fetch_update_manifest(self.cfg, self.cfg.get("update_channel", "Main"))
 			self.pending_update = manifest
 			self.pending_manifest_url = manifest_url
-
 			remote_version = manifest.get("version", "unknown")
-			remote_build = manifest.get("build", "?")
+
 			if manifest_is_newer(parse_version_build(VERSION), manifest):
 				notes = manifest.get("notes", [])
 				if isinstance(notes, list):
@@ -12483,27 +12487,27 @@ class SettingsDialog(QDialog):
 					notes_text = str(notes)
 
 				self.update_status.setText(
-					f"Update available: {remote_version} (build {remote_build})\n{notes_text}"
+					f"Update Available: {remote_version}\n{notes_text}"
 				)
 				QMessageBox.information(
 					self,
 					"Update Available",
-					f"New version found: {remote_version} (build {remote_build})"
+					f"New Version Found: {remote_version}"
 				)
 			else:
 				self.update_status.setText(
-					f"Up to date on {self.cfg.get('update_channel', 'main')}."
+					f"Up to Date on {self.cfg.get('update_channel', 'Main')}."
 				)
 				QMessageBox.information(
 					self,
 					"No Update",
-					"You are already on the newest build for this channel."
+					"You are already on the Newest Build for this Channel."
 				)
 
 		except Exception as e:
 			self.pending_update = None
 			self.pending_manifest_url = ""
-			self.update_status.setText(f"Update check failed: {e}")
+			self.update_status.setText(f"Update Check failed: {e}")
 			QMessageBox.warning(self, "Update Check Failed", str(e))
 
 	def on_install_update(self):
@@ -12513,7 +12517,7 @@ class SettingsDialog(QDialog):
 		if not manifest:
 			try:
 				manifest, self.pending_manifest_url = fetch_update_manifest(self.cfg,
-																			self.cfg.get("update_channel", "main"))
+																			self.cfg.get("update_channel", "Main"))
 				self.pending_update = manifest
 			except Exception as e:
 				QMessageBox.warning(self, "Update", f"Could not load manifest:\n{e}")
