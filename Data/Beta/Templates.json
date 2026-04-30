@@ -1,0 +1,83 @@
+[
+  {
+    "name": "MenuElementRT",
+    "type": "Rectangle Toggle",
+    "width": 72,
+    "height": 72,
+    "path": "",
+    "tint_percent": 100,
+    "extends": null
+  },
+  {
+    "name": "MenuElementCT",
+    "type": "Circle Toggle",
+    "width": 72,
+    "height": 72,
+    "path": "",
+    "tint_percent": 0,
+    "extends": null
+  },
+  {
+    "name": "MenuBackground",
+    "type": "Visual",
+    "width": 400,
+    "height": 600,
+    "path": "",
+    "tint_percent": 0,
+    "extends": null
+  },
+  {
+    "name": "MenuElementVisual",
+    "type": "Visual",
+    "width": 72,
+    "height": 72,
+    "path": "",
+    "tint_percent": 0,
+    "extends": null
+  },
+  {
+    "name": "Drag Zone",
+    "type": "Drag Zone",
+    "width": 400,
+    "height": 50,
+    "path": "",
+    "tint_percent": 0,
+    "extends": null
+  },
+  {
+    "name": "MenuElementSlider",
+    "type": "ShapeKey Slider",
+    "width": 360,
+    "height": 28,
+    "path": "",
+    "tint_percent": 100,
+    "extends": null
+  },
+  {
+    "name": "MenuElementSliderCursor",
+    "type": "Slider Cursor",
+    "width": 64,
+    "height": 64,
+    "path": "",
+    "tint_percent": 0,
+    "extends": null
+  },
+  {
+    "name": "CustomShapedToggle",
+    "type": "Custom Shaped Toggle",
+    "width": 1200,
+    "height": 1181,
+    "path": "",
+    "tint_percent": 0,
+    "extends": null
+  },
+  {
+    "name": "NewTestToggle",
+    "type": "Rectangle Toggle",
+    "width": 230,
+    "height": 345,
+    "path": "",
+    "tint_percent": 0,
+    "extends": null
+  }
+]
