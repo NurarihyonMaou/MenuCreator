@@ -5,10 +5,12 @@ import ast
 import operator as op
 import codecs
 from collections import defaultdict, OrderedDict
+from copy import deepcopy
 import sys
 import re
 import json
 import os
+import uuid
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -19,17 +21,19 @@ from PySide6.QtWidgets import (
 	QListWidgetItem, QAbstractItemView, QSlider, QTabWidget, QFileDialog, QMessageBox, QDialog, QTextEdit, QScrollArea,
 	QFrame, QSplitter, QSizePolicy, QTableWidget, QTableWidgetItem, QSizeGrip, QColorDialog, QScrollBar, QTreeWidget,
 	QTreeWidgetItem, QMenu, QInputDialog, QCheckBox, QSpinBox, QStyleFactory, QFormLayout, QHeaderView, QGroupBox,
-	QStyledItemDelegate, QProgressBar
+	QStyledItemDelegate, QProgressBar, QDockWidget
 )
 from PySide6.QtGui import QPixmap, QColor, QPainter, QGuiApplication, QCursor, QFont, QTextCharFormat, \
 	QSyntaxHighlighter, QPen, QFontMetrics, QBrush, QIcon, QIntValidator, QTextCursor, QPalette, QFontDatabase, \
 	QShortcut, QKeyEvent
-from PySide6.QtCore import Qt, QPoint, QEvent, QTimer, QRect, Signal, QPointF, QObject, QThread, qInstallMessageHandler
+from PySide6.QtCore import Qt, QPoint, QEvent, QTimer, QRect, Signal, QPointF, QObject, QThread, qInstallMessageHandler, \
+	QSize, QRectF
 
 from PySide6.QtGui import QUndoStack, QUndoCommand, QKeySequence, QAction
 
 from datetime import datetime
 
+import zipfile
 import shutil
 import hashlib
 import tempfile
@@ -40,6 +44,10 @@ import traceback
 import threading
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+
+from urllib.parse import urlparse
+import time
+
 from logging.handlers import RotatingFileHandler
 
 try:
@@ -50,20 +58,43 @@ except Exception:
 	HAS_CRYPTO = False
 
 
-VERSION = "3.3.7.1B"
+VERSION = "4.0B"
+DEFAULT_FILES_VERSION = 1.1
 
 UPDATE_CHANNELS = ("Main", "Beta")
 UPDATE_MANIFEST_PATH_DEFAULT = "Updates"
 UPDATE_PRIVATE_REDEEM_URL_DEFAULT = ""
 UPDATE_PRIVATE_MANIFEST_URL_DEFAULT = ""
 
-PUBLIC_KEY = ""  # optional: put your PEM public key here if you enable signature checks
-UPDATE_REQUIRE_SIGNATURE = False
+PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
+MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAq+bULXTLZG1E7G8xWhHb
+aYuJDyvZkuySdp8pwxT8lUre0FyZJLLJT8hUu37o7bR5h9zvKuaYJsZoAuSOJeo8
+gaIB5nyIVHR+PlM4WtLWA1Marzu2MI4IF22dMf3rnUPfQ823GiqhhQDq2Q2usOhM
+RLe7kH4POsUIgJXUlJRS5GUpKWPC/IForY+56OZHuPqBcN+lDHb4QKWEXSRxb7hU
+uZqJFnZR9H3npZCed3BvoD2AMgQAB4AIxRr08TlReMtDOY7C416EQYwEpwg4u7pT
+CPTmDrsKVt8mNGkxsIL4T1jaiTH2YVMvV1zaNUDLdcPCxCqWWIHtqYqXn+8iG/3g
+er6HxDzHtxktP2FyJV+LxdXW/Yy+noHOrwpu0zcLqakuUwbbuNl7wpSFD12jzAsA
+kQodJ3e5u8hV5qDrbUIhtbdElve4BnS6fUg9/wgPOM0NL3ErXQ1hiye8CyblQ0kS
+zk+cipZDe8a4GqCvzL5zw2k5Wcv1vsI/axppr1Y6X6wWNkxa+zp1XrlpqQyJHigq
+6B4PSipFaXanhMBTfcRw6yLq+1pcUnpo247/6bnU4GdunH1ywo7vuE7T4IfTQ8I2
+O2Xs99bPKg9/Is0ONJWPFJ2n0+fzi3nO6qb71pqLpZAFdHdA8hgP+PLkG4B8FO89
+Tg8oo/hWOLaUHmV2P9Yz8pcCAwEAAQ==
+-----END PUBLIC KEY-----"""
+# optional: put your PEM public key here if you enable signature checks
+UPDATE_REQUIRE_SIGNATURE = True
 ALLOW_DEV_UPDATES = os.environ.get("MENUCREATOR_ALLOW_DEV_UPDATES", "0") == "1"
+
+MAX_UPDATE_SIZE_BYTES = 60 * 1024 * 1024
+
+ALLOWED_UPDATE_HOSTS = {
+	"raw.githubusercontent.com",
+}
 
 SAVE_DIR = "Saves"
 SNAPSHOT_DIR = "Saves/SnapShots"
 LAYOUTS_DIR = "Saves/Layouts"
+BACKUP_DIR = "Saves/Backups"
+IMAGES_DIR = "Saves/Images"
 
 TEMPLATES_FILE = "Templates.json"
 LAST_SESSION_FILE = "LastSession.json"
@@ -239,7 +270,9 @@ class KeyBindingsManager:
 			"lock_z": "X",
 			"toggle_aspect": "C",
 			"cancel": "Esc",
-			"help": "F1"
+			"help": "F1",
+			"hide_ui": "``",
+			"export_selected_images": "F3"
 		}
 
 		self.bindings = {}
@@ -445,28 +478,28 @@ class FullKeyBindingsInfoDialog(QDialog):
 
 		# ---------- STYLE ----------
 		self.setStyleSheet("""
-            QDialog { background:#2b2b2b; }
-            QLabel { color:#ddd; }
-            QTreeWidget { 
-                background:#323232;
-                color:#eee;
-                font-size:13px;
-            }
-            QGroupBox {
-                font-weight:600;
-                margin-top:10px;
-                color:#ddd;
-            }
-            QPushButton {
-                padding:6px 12px;
-                border-radius:6px;
-                background:#444;
-                color:white;
-            }
-            QPushButton:hover {
-                background:#666;
-            }
-        """)
+			QDialog { background:#2b2b2b; }
+			QLabel { color:#ddd; }
+			QTreeWidget { 
+				background:#323232;
+				color:#eee;
+				font-size:13px;
+			}
+			QGroupBox {
+				font-weight:600;
+				margin-top:10px;
+				color:#ddd;
+			}
+			QPushButton {
+				padding:6px 12px;
+				border-radius:6px;
+				background:#444;
+				color:white;
+			}
+			QPushButton:hover {
+				background:#666;
+			}
+		""")
 
 	# ---------- HELPERS ----------
 
@@ -479,7 +512,9 @@ class FullKeyBindingsInfoDialog(QDialog):
 			"lock_z": "Lock Y Axis",
 			"toggle_aspect": "Toggle Aspect Ratio",
 			"cancel": "Cancel Editing",
-			"help": "Show Help"
+			"help": "Show Help",
+			"hide_ui": "Toggle UI",
+			"export_selected_images": "Export Tinted Images"
 		}
 		return mapping.get(a, a)
 
@@ -523,6 +558,17 @@ class FullKeyBindingsInfoDialog(QDialog):
 			return (
 				"General",
 				"Open Help/Re:Bind Modal (This)"
+			)
+		if action == "hide_ui":
+			return (
+				"General",
+				"Toggle UI"
+			)
+
+		if action == "export_selected_images":
+			return (
+				"General",
+				"Export Selected Images with Tint Applied"
 			)
 
 		return ("General", "No Description.")
@@ -648,12 +694,12 @@ def ensure_declared_dependencies_have_elements(parent, text: str, editor,
 											   dep_to_types: dict[str, list[str]] | None = None,
 											   include_displayed_items: bool = True) -> str:
 	"""
-    - Wyciąga deklarowane Dependencies z text
-    - Dla każdej deklaracji sprawdza, czy istnieje odpowiadający element w editor.code_elements / editor.display_items
-      (używa dep_to_types jeśli podasz mapping dependency -> [typeName,...], inaczej robi substring-match)
-    - Jeśli jakieś deklaracje nie mają odpowiadających elementów → pokazuje QMessageBox z listą braków (Yes/No)
-    - Zwraca oryginalny text (bez modyfikacji). Popup to jedyna akcja.
-    """
+	- Wyciąga deklarowane Dependencies z text
+	- Dla każdej deklaracji sprawdza, czy istnieje odpowiadający element w editor.code_elements / editor.display_items
+	  (używa dep_to_types jeśli podasz mapping dependency -> [typeName,...], inaczej robi substring-match)
+	- Jeśli jakieś deklaracje nie mają odpowiadających elementów → pokazuje QMessageBox z listą braków (Yes/No)
+	- Zwraca oryginalny text (bez modyfikacji). Popup to jedyna akcja.
+	"""
 	declared = extract_dependencies_from_text(text)
 	if not declared:
 		return text  # nic zadeklarowanego
@@ -753,15 +799,15 @@ def _compile_regex_spec(raw_pat: str):
 
 def parse_method_chain(expr: str):
 	"""
-    Rozdziela:
-        d_element.name.replace(" ", "").lower()
+	Rozdziela:
+		d_element.name.replace(" ", "").lower()
 
-    na:
-        base = "d_element.name"
-        calls = ['replace(" ", "")', 'lower()']
+	na:
+		base = "d_element.name"
+		calls = ['replace(" ", "")', 'lower()']
 
-    Zwykłe atrybuty z kropką zostają w base.
-    """
+	Zwykłe atrybuty z kropką zostają w base.
+	"""
 	if not isinstance(expr, str):
 		return None, []
 
@@ -805,8 +851,8 @@ def parse_call(call: str):
 
 def build_ops_from_calls(calls):
 	"""
-    Zamienia chain calli na wspólną listę operacji.
-    """
+	Zamienia chain calli na wspólną listę operacji.
+	"""
 	ops = []
 
 	for call in calls:
@@ -840,9 +886,9 @@ def build_ops_from_calls(calls):
 
 def apply_string_transforms(text, ops):
 	"""
-    Wspólny engine transformacji.
-    Jeśli dostaje listę/tuple, mapuje po elementach.
-    """
+	Wspólny engine transformacji.
+	Jeśli dostaje listę/tuple, mapuje po elementach.
+	"""
 	if text is None:
 		return None
 
@@ -883,8 +929,8 @@ def apply_string_transforms(text, ops):
 
 def _walk_attr_chain(cur, rest, allow_z=False):
 	"""
-    Wspólny walker po atrybutach / itemach, z aliasami dla obiektów z pixmap().
-    """
+	Wspólny walker po atrybutach / itemach, z aliasami dla obiektów z pixmap().
+	"""
 	for attr in rest:
 		if cur is None:
 			return None
@@ -973,11 +1019,11 @@ _POST_CMD_RE = re.compile(
 
 def process_post_commands(full_text: str, post_commands: list, debug: bool = False):
 	"""
-    Apply collected post_commands in order to full_text.
-    Allowed:
-        global.replace('old','new')      -> literal replace across full_text
-        global.re_sub('pattern','repl')  -> regex substitution
-    """
+	Apply collected post_commands in order to full_text.
+	Allowed:
+		global.replace('old','new')      -> literal replace across full_text
+		global.re_sub('pattern','repl')  -> regex substitution
+	"""
 
 	if debug:
 		print("\n[POST] ===== START process_post_commands =====")
@@ -1368,8 +1414,8 @@ def auto_expand_drawindexed_matching(display_items, ini_text):
 
 def safe_scaled(pixmap: QPixmap, w: int, h: int) -> QPixmap:
 	"""
-    Safely scale a QPixmap. If pixmap is None or null, create a minimal empty Pixmap.
-    """
+	Safely scale a QPixmap. If pixmap is None or null, create a minimal empty Pixmap.
+	"""
 	if pixmap is None or pixmap.isNull():
 		pixmap = QPixmap(max(1, w), max(1, h))
 	return pixmap.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
@@ -1384,15 +1430,15 @@ def _norm_key_token(tok: str):
 
 def _eval_condition_expr(expr, code, all_code=None, idx=None, all_visuals=None, local_vars=None, visual=None):
 	"""
-    Bezpieczny evaluator dla prostych wyrażeń:
-      - presence:  key  OR  code_elem['Key']  OR  variable.attr (d_element.name)
-      - equality:  "literal" == "literal"  OR  dotted == "value"  OR  dotted == dotted
-      - negation:  not <expr>
-    Zwraca True/False.
-    local_vars: dict z lokalnymi zmiennymi pętli (np. {'d_element': DisplayedItem})
-    visual: optional referenced visual (existing 'element' in pipeline)
-    all_visuals: lista wszystkich display_items
-    """
+	Bezpieczny evaluator dla prostych wyrażeń:
+	  - presence:  key  OR  code_elem['Key']  OR  variable.attr (d_element.name)
+	  - equality:  "literal" == "literal"  OR  dotted == "value"  OR  dotted == dotted
+	  - negation:  not <expr>
+	Zwraca True/False.
+	local_vars: dict z lokalnymi zmiennymi pętli (np. {'d_element': DisplayedItem})
+	visual: optional referenced visual (existing 'element' in pipeline)
+	all_visuals: lista wszystkich display_items
+	"""
 	expr = expr.strip()
 
 	# OR (najniższy priorytet)
@@ -1546,9 +1592,9 @@ _NUMERIC_CMP_RE = re.compile(
 
 def _split_top_level(s, sep="?"):
 	"""
-    Split s on first top-level sep (not inside {...} or quotes).
-    Returns (left, right) where right is "" if sep not found.
-    """
+	Split s on first top-level sep (not inside {...} or quotes).
+	Returns (left, right) where right is "" if sep not found.
+	"""
 	brace_depth = 0
 	in_single = False
 	in_double = False
@@ -1573,11 +1619,11 @@ def _split_top_level(s, sep="?"):
 
 def expand_if_blocks(lines, code, all_code, visual, all_visuals, local_vars=None, debug=True):
 	"""
-    Expand multi-line {if COND: ... } blocks with top-level ternary support.
-      - supports len(token) where token resolves via _resolve_path_value
-      - resolves {x.y} placeholders inside condition before evaluation
-      - decodes escape sequences inside chosen block (so '\t' or '\n' count as content)
-    """
+	Expand multi-line {if COND: ... } blocks with top-level ternary support.
+	  - supports len(token) where token resolves via _resolve_path_value
+	  - resolves {x.y} placeholders inside condition before evaluation
+	  - decodes escape sequences inside chosen block (so '\t' or '\n' count as content)
+	"""
 	text = "\n".join(lines)
 	out_parts = []
 	L = len(text)
@@ -1782,9 +1828,9 @@ def expand_if_blocks(lines, code, all_code, visual, all_visuals, local_vars=None
 
 def _process_conditionals_in_line(line, code, all_code, idx=None, all_visuals=None, local_vars=None, visual=None):
 	"""
-    Inline/single-line conditional processor with ternary support.
-    Accepts content possibly containing top-level '?' and will return chosen expression (or "")
-    """
+	Inline/single-line conditional processor with ternary support.
+	Accepts content possibly containing top-level '?' and will return chosen expression (or "")
+	"""
 	out = []
 	pos = 0
 	L = len(line)
@@ -1960,9 +2006,9 @@ def smart_cast_expr(expr: str):
 
 def _resolve_base_value(base, local_vars, visual, code, all_visuals, all_code):
 	"""
-    Odpowiada za całą starą logikę _resolve_path_value,
-    ale bez końcowych transformacji stringowych.
-    """
+	Odpowiada za całą starą logikę _resolve_path_value,
+	ale bez końcowych transformacji stringowych.
+	"""
 	if not isinstance(base, str):
 		return None
 
@@ -2059,19 +2105,19 @@ def _resolve_base_value(base, local_vars, visual, code, all_visuals, all_code):
 
 def _resolve_path_value(path, local_vars, visual, code, all_visuals, all_code, idx=None):
 	"""
-    path:
-        'd_element.name'
-        'element.type_name'
-        'code_elem.SomeKey'
-        'element.name.replace("old","new").lower()'
+	path:
+		'd_element.name'
+		'element.type_name'
+		'code_elem.SomeKey'
+		'element.name.replace("old","new").lower()'
 
-    Obsługuje chain:
-        .replace('a','b')
-        .lower()
-        .upper()
+	Obsługuje chain:
+		.replace('a','b')
+		.lower()
+		.upper()
 
-    Zwraca Python value albo None.
-    """
+	Zwraca Python value albo None.
+	"""
 	if not isinstance(path, str):
 		return None
 
@@ -2099,16 +2145,16 @@ def _resolve_path_value(path, local_vars, visual, code, all_visuals, all_code, i
 # -------------------------
 def expand_for_blocks(lines, code, visual, display_items, code_elements):
 	"""
-    Rozwijaj bloki:
-      {for var in display_elements}
-        ... (może zawierać {var.attr} lub ${var.attr} i {if ...})
-      {endfor}
+	Rozwijaj bloki:
+	  {for var in display_elements}
+		... (może zawierać {var.attr} lub ${var.attr} i {if ...})
+	  {endfor}
 
-    Zwraca nową listę lines (już rozpisanych).
+	Zwraca nową listę lines (już rozpisanych).
 
-    DODATEK: obsługa liniowych poleceń "{break}" i "{continue}" — mogą być wynikiem
-    inline {if ...: {break}} lub zwykłej linii w bloku.
-    """
+	DODATEK: obsługa liniowych poleceń "{break}" i "{continue}" — mogą być wynikiem
+	inline {if ...: {break}} lub zwykłej linii w bloku.
+	"""
 	for_block_start_re = re.compile(r"^\{for\s+([A-Za-z_]\w*)\s+in\s+(display_elements|code_elements)\}\s*$")
 	for_block_end_re = re.compile(r"^\{endfor\}\s*$")
 
@@ -2255,6 +2301,68 @@ def snap(v, g):
 	return math.floor((v + g * 0.5) / g) * g
 
 
+class PreviewWindow(QMainWindow):
+	def __init__(self, scene):
+		super().__init__()
+		self.setWindowTitle("Preview")
+
+		# prawdziwy fullscreen preview
+		self.setWindowFlags(
+			Qt.WindowType.FramelessWindowHint |
+			Qt.WindowType.WindowStaysOnTopHint
+		)
+
+		self.setContentsMargins(0, 0, 0, 0)
+
+		container = QWidget()
+		container_layout = QVBoxLayout(container)
+		container_layout.setContentsMargins(0, 0, 0, 0)
+		container_layout.setSpacing(0)
+
+		self.view = QGraphicsView(scene)
+		self.view.setFrameShape(QFrame.Shape.NoFrame)
+		self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+		self.view.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+		self.view.setAlignment(Qt.AlignmentFlag.AlignCenter)
+		self.view.setContentsMargins(0, 0, 0, 0)
+		self.view.setRenderHints(
+			QPainter.RenderHint.Antialiasing |
+			QPainter.RenderHint.SmoothPixmapTransform
+		)
+		self.view.setStyleSheet("QGraphicsView { border: 0px; margin: 0px; padding: 0px; }")
+
+		container_layout.addWidget(self.view)
+		self.setCentralWidget(container)
+
+	def fit_exact(self):
+		sc = self.view.scene()
+		if not sc:
+			return
+
+		sr = sc.sceneRect()
+		if sr.isNull() or sr.width() <= 0 or sr.height() <= 0:
+			return
+
+		vw = max(1, self.view.viewport().width())
+		vh = max(1, self.view.viewport().height())
+
+		sx = vw / sr.width()
+		sy = vh / sr.height()
+		s = min(sx, sy)
+
+		self.view.resetTransform()
+		self.view.scale(s, s)
+		self.view.centerOn(sr.center())
+
+	def showEvent(self, event):
+		super().showEvent(event)
+		QTimer.singleShot(0, self.fit_exact)
+
+	def resizeEvent(self, event):
+		super().resizeEvent(event)
+		QTimer.singleShot(0, self.fit_exact)
+
+
 class LockedView(QGraphicsView):
 	viewChanged = Signal()
 
@@ -2265,21 +2373,60 @@ class LockedView(QGraphicsView):
 		self.major_factor = major_factor
 		self.show_grid = False
 
-		self.base_grid = grid_size  # world units
-		self.grid_scale = 1.0  # virtual zoom
+		self.base_grid = grid_size
+		self.grid_scale = 1.0
 		self.grid_min = 0.25
 		self.grid_max = 8.0
 		self.grid_step = 1.25
 
-		self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
-		self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
+		self.auto_fit = True
+		self.keep_aspect_ratio = True
+
+		self.setTransformationAnchor(QGraphicsView.AnchorViewCenter)
+		self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
+		self.setAlignment(Qt.AlignCenter)
+		self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+		self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+		#self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+		self.setRenderHints(
+			QPainter.RenderHint.Antialiasing |
+			QPainter.RenderHint.SmoothPixmapTransform
+		)
+
+		self.debug_overlay = DebugOverlay(self)
+
+	def fit_canvas_to_view(self):
+		sc = self.scene()
+		if not sc:
+			return
+
+		sr = sc.sceneRect()
+		if sr.isNull():
+			return
+
+		self.resetTransform()
+
+		if self.keep_aspect_ratio:
+			self.fitInView(sr, Qt.KeepAspectRatio)
+		else:
+			self.fitInView(sr, Qt.IgnoreAspectRatio)
+
+		self.centerOn(sr.center())
 
 	def resizeEvent(self, event):
 		super().resizeEvent(event)
+		if self.auto_fit:
+			QTimer.singleShot(0, self.fit_canvas_to_view)
 		self.viewChanged.emit()
 
+	def showEvent(self, event):
+		super().showEvent(event)
+		if self.auto_fit:
+			QTimer.singleShot(0, self.fit_canvas_to_view)
+
 	def wheelEvent(self, event):
-		if event.modifiers() & Qt.ShiftModifier:
+		# jeśli nie chcesz zoomu w normal view, zostaw tylko Shift-grid
+		if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
 			factor = self.grid_step if event.angleDelta().y() > 0 else 1 / self.grid_step
 			new_scale = self.grid_scale * factor
 
@@ -2291,6 +2438,76 @@ class LockedView(QGraphicsView):
 			event.accept()
 		else:
 			event.ignore()
+
+	def drawForeground(self, painter, rect):
+		super().drawForeground(painter, rect)
+
+		painter.save()
+
+		# ----------------------------------------
+		# DEBUG RECTANGLES
+		# ----------------------------------------
+
+		# red = sceneRect
+		painter.setPen(QPen(Qt.red, 0))
+		painter.drawRect(self.sceneRect())
+
+		# blue = visible viewport mapped into scene
+		visible = self.mapToScene(self.viewport().rect()).boundingRect()
+		painter.setPen(QPen(Qt.blue, 0))
+		painter.drawRect(visible)
+
+		# ----------------------------------------
+		# DARKEN AREA OUTSIDE sceneRect
+		# ----------------------------------------
+
+		sr = self.sceneRect()
+
+		mask = QColor(0, 0, 0, 85)
+		painter.setBrush(mask)
+		painter.setPen(Qt.NoPen)
+
+		# top
+		painter.drawRect(
+			QRectF(
+				visible.left(),
+				visible.top(),
+				visible.width(),
+				max(0, sr.top() - visible.top())
+			)
+		)
+
+		# bottom
+		painter.drawRect(
+			QRectF(
+				visible.left(),
+				sr.bottom(),
+				visible.width(),
+				max(0, visible.bottom() - sr.bottom())
+			)
+		)
+
+		# left
+		painter.drawRect(
+			QRectF(
+				visible.left(),
+				sr.top(),
+				max(0, sr.left() - visible.left()),
+				sr.height()
+			)
+		)
+
+		# right
+		painter.drawRect(
+			QRectF(
+				sr.right(),
+				sr.top(),
+				max(0, visible.right() - sr.right()),
+				sr.height()
+			)
+		)
+
+		painter.restore()
 
 	def drawBackground(self, painter, rect):
 		super().drawBackground(painter, rect)
@@ -2946,10 +3163,10 @@ class PlaceholderTable(QTableWidget):
 
 	def set_placeholders(self, placeholders, values=None, ini_lines=None):
 		"""
-        placeholders: dict placeholder -> max_count (int) or None
-        values: dict placeholder -> list of prefilled values
-        ini_lines: list of INI lines containing placeholders
-        """
+		placeholders: dict placeholder -> max_count (int) or None
+		values: dict placeholder -> list of prefilled values
+		ini_lines: list of INI lines containing placeholders
+		"""
 		self._updating = True
 		self.blockSignals(True)
 
@@ -3070,9 +3287,9 @@ class PlaceholderTable(QTableWidget):
 
 	def _find_insert_row_for_new_slot(self, placeholder, slot):
 		"""
-        Return visual row index where a new slot row should be inserted.
-        This avoids rebuilding the whole table while editing.
-        """
+		Return visual row index where a new slot row should be inserted.
+		This avoids rebuilding the whole table while editing.
+		"""
 		if not self._row_map:
 			return 0
 
@@ -3096,8 +3313,8 @@ class PlaceholderTable(QTableWidget):
 
 	def _insert_slot_row(self, placeholder, slot, value=""):
 		"""
-        Insert one visual row without rebuilding the whole table.
-        """
+		Insert one visual row without rebuilding the whole table.
+		"""
 		insert_at = self._find_insert_row_for_new_slot(placeholder, slot)
 
 		self._updating = True
@@ -3168,8 +3385,8 @@ class PlaceholderTable(QTableWidget):
 
 	def append_slot(self, placeholder, slot_index=None):
 		"""
-        Manual add of a slot. This does NOT rebuild the whole table.
-        """
+		Manual add of a slot. This does NOT rebuild the whole table.
+		"""
 		max_allowed = self.placeholder_max.get(placeholder)
 		vals = self.values.setdefault(placeholder, [""])
 
@@ -3484,10 +3701,10 @@ class CodeElementDialog(QDialog):
 	@staticmethod
 	def extract_placeholders(type_ini_code):
 		"""
-        Parse placeholders and return dict placeholder -> max_count or None.
-        If template declares {Name.xN} -> returns int(N).
-        If only {Name} is present -> returns None (dynamic/unlimited).
-        """
+		Parse placeholders and return dict placeholder -> max_count or None.
+		If template declares {Name.xN} -> returns int(N).
+		If only {Name} is present -> returns None (dynamic/unlimited).
+		"""
 		results = {}
 		for name, count in re.findall(r"\{([a-zA-Z_]\w*)(?:\.x(\d+))?\}", type_ini_code):
 			if name in ['endfor', 'continue', 'skip', 'EndLoop', 'Loop:', 'max_page']:
@@ -3889,7 +4106,7 @@ class TypeEditorDialog(QDialog):
 		self.types[self.current]["ini_code"] = self.ini_edit.toPlainText()
 
 	def add(self):
-		t = {"name": "NewType", "ini_code": "", "is_default": False, "kind": "Visual"}
+		t = {"name": "NewType", "ini_code": "", "is_default": False, "modified_by_user": False, "kind": "Visual"}
 		self.types.append(t)
 		self.list.addItem(t["name"])
 		self.list.setCurrentRow(len(self.types) - 1)
@@ -3957,6 +4174,35 @@ class DisplayedItem(QGraphicsPixmapItem):
 			"children_names": [child.name for child in self.children],
 			"template_name": self.template_name,
 		}
+
+	def get_tinted_pixmap(self):
+		src = self.original_pixmap
+
+		if not src or src.isNull():
+			return QPixmap()
+
+		# Placeholder / empty source handling
+		if self.pixmap_path == '':
+			src = QPixmap(src)
+			src.fill(QColor(255, 255, 255, 255))
+
+		# Use current displayed size, or original size if nothing is shown yet
+		cur = self.pixmap()
+		width = cur.width() if cur and not cur.isNull() else src.width()
+		height = cur.height() if cur and not cur.isNull() else src.height()
+
+		result = safe_scaled(src, width, height)
+
+		if self.tint_percent == 0:
+			return result
+
+		painter = QPainter(result)
+		painter.setCompositionMode(QPainter.CompositionMode_Multiply)
+		painter.setOpacity(self.tint_percent / 100.0)
+		painter.fillRect(result.rect(), self.tint_color)
+		painter.end()
+
+		return result
 
 	def apply_tint(self):
 		src = self.original_pixmap
@@ -4027,12 +4273,12 @@ class DisplayedItem(QGraphicsPixmapItem):
 
 	def itemChange(self, change, value):
 		"""
-        Safe itemChange handler:
-        - Move children on ItemPositionChange (before position actually changes)
-        - Update inspector fields on ItemPositionHasChanged (after position changed) with signals blocked
-        - Keep children stored as list, not generator
-        - Sync selection to outliner safely
-        """
+		Safe itemChange handler:
+		- Move children on ItemPositionChange (before position actually changes)
+		- Update inspector fields on ItemPositionHasChanged (after position changed) with signals blocked
+		- Keep children stored as list, not generator
+		- Sync selection to outliner safely
+		"""
 
 		# ---------- BEFORE position actually changes: move children by delta ----------
 		if change == QGraphicsItem.ItemPositionChange:
@@ -4070,7 +4316,7 @@ class DisplayedItem(QGraphicsPixmapItem):
 					editor.settings_pos_y_entry.blockSignals(True)
 
 					# convert scene pos to screen coords and write to entries
-					screen_point = editor.scene_to_screen(self.pos())
+					screen_point = self.pos()
 					editor.settings_pos_x_entry.setText(str(int(screen_point.x())))
 					editor.settings_pos_y_entry.setText(str(int(screen_point.y())))
 				except Exception:
@@ -4086,10 +4332,10 @@ class DisplayedItem(QGraphicsPixmapItem):
 					parent = next((elem for elem in (getattr(editor, "display_items", []) if editor else []) if
 								   elem.name == self.parent_item), None)
 					if parent:
-						child_screen = editor.scene_to_screen(self.pos())
-						parent_screen = editor.scene_to_screen(parent.pos())
-						self.parent_offset_x = child_screen.x() - parent_screen.x()
-						self.parent_offset_y = child_screen.y() - parent_screen.y()
+						#child_screen = editor.scene_to_screen(self.pos())
+						#parent_screen = editor.scene_to_screen(parent.pos())
+						self.parent_offset_x = self.pos().x() - parent.pos().x()
+						self.parent_offset_y = self.pos().y() - parent.pos().y()
 						if self.isSelected() and editor:
 							# block signals for offset entries as well
 							try:
@@ -4847,9 +5093,9 @@ class OutlinerTree(QTreeWidget):
 	# ------------------------- Drop Event -------------------------
 	def dropEvent(self, event):
 		"""
-        Minimal pre-validation, allow Qt to perform the drop, then always
-        synchronise the model from the tree using a deterministic routine.
-        """
+		Minimal pre-validation, allow Qt to perform the drop, then always
+		synchronise the model from the tree using a deterministic routine.
+		"""
 		# defensive pos getter
 		try:
 			pos = event.position().toPoint()
@@ -4990,9 +5236,9 @@ class OutlinerTree(QTreeWidget):
 
 	def _sync_all_from_tree(self):
 		"""
-        Rebuild editor.pages, editor.groups, and element fields from the current
-        tree structure. Deterministic and authoritative — tree is source of truth.
-        """
+		Rebuild editor.pages, editor.groups, and element fields from the current
+		tree structure. Deterministic and authoritative — tree is source of truth.
+		"""
 		# find roots
 		root_always = self._find_top("ROOT_ALWAYS")
 		root_pages = self._find_top("ROOT_PAGES")
@@ -5091,9 +5337,9 @@ class OutlinerTree(QTreeWidget):
 
 	def _sync_tree_element_to_model(self, tree_item, parent_type, page_index=None):
 		"""
-        Sync a single subtree starting at tree_item into element model fields.
-        Used for page reorders where we already know page index.
-        """
+		Sync a single subtree starting at tree_item into element model fields.
+		Used for page reorders where we already know page index.
+		"""
 
 		# helper recurse
 		def recurse(ch, current_group_idx=None):
@@ -5675,26 +5921,12 @@ def _make_uid() -> str:
 
 
 # ------------------------------------------------------------
-# Texture parser
+# Texture block manager
 # ------------------------------------------------------------
 
-@dataclass
-class TextureBlock:
-	uid: str
-	header_key: tuple
-	start: int
-	end: int
-	text: str
-	comment: str
-	key: str
-	value: str
-	condition: str = ""
-	raw_text: str = ""
-
-	@property
-	def san(self) -> str:
-		return _sanitize_key(self.key or self.value or self.comment or "texture")
-
+TEXTURE_SLOT_RE = re.compile(r"^(?:ps|vs|gs|hs|ds|cs)-t\d+\b", re.I)
+BIND_RE = re.compile(r"^\s*([^;#\[\]=:]+?)\s*(=|:)\s*(.+?)\s*$")
+RUN_HINT_RE = re.compile(r"(?i)(ORFix|TexFx|RabbitFX)")
 
 TEXTURE_SUFFIXES = (
 	"normalmap",
@@ -5709,58 +5941,62 @@ TEXTURE_SUFFIXES = (
 )
 
 TEXTURE_SUFFIX_RE = re.compile(
-	r"(?i)^(.*?)(?:"
-	r"NormalMap|LightMap|Specular|Emissive|BaseColor|Albedo|Diffuse|Normal|Light"
-	r")$"
+	r"(?i)^(.*?)(?:NormalMap|LightMap|Specular|Emissive|BaseColor|Albedo|Diffuse|Normal|Light)$"
 )
-
-TEXTURE_SLOT_RE = re.compile(r"^(?:ps|vs|gs|hs|ds|cs)-t\d+\b", re.I)
-BIND_RE = re.compile(r"^\s*([^;#\[\]=:]+?)\s*(=|:)\s*(.+?)\s*$")
-
 
 def _normalize_text(s: str) -> str:
 	return (s or "").replace("\r\n", "\n").replace("\r", "\n")
 
+def _sanitize_key(s: str) -> str:
+	s = (s or "").strip()
+	s = re.sub(r"\(.+?\)", "", s)
+	s = re.sub(r"[^A-Za-z0-9]+", "", s)
+	return s.lower()
 
-def _is_valid_texture_section(section_name: str) -> bool:
-	s = (section_name or "").strip().lower()
-	return s.startswith("textureoverride") or s.startswith("commandlist")
+def _make_uid() -> str:
+	fn = globals().get("_make_uid")
+	if callable(fn):
+		try:
+			return fn()
+		except Exception:
+			pass
+	return uuid.uuid4().hex[:12]
 
+def _stable_found_uid(section: str, name: str) -> str:
+	return f"found::{_sanitize_key(section)}::{_sanitize_key(name)}"
+
+def _section_to_block_name(section_name: str) -> str:
+	s = (section_name or "").strip()
+	for prefix in ("TextureOverride", "CommandList"):
+		if s.startswith(prefix):
+			s = s[len(prefix):].strip()
+			break
+	s = s.lstrip("_-: ").strip()
+	return s or (section_name or "").strip() or "Block"
 
 def _strip_resource_prefix(s: str) -> str:
-	s = (s or "").strip()
-	s = s.replace("\\", "/")
+	s = (s or "").strip().replace("\\", "/")
 	s = re.sub(r"(?i)^resource[:/\\]*", "", s)
 	s = re.sub(r"(?i)^resource", "", s)
 	return s.strip("/\\")
 
-
 def _extract_semantic(name: str) -> str:
 	s = _strip_resource_prefix(name).replace("\\", "/")
-	last = s.split("/")[-1].strip()
+	last = s.split("/")[-1].strip().lower()
 
-	low = last.lower()
-	if low.endswith("normalmap") or low.endswith("normal"):
+	if last.endswith("normalmap") or last.endswith("normal"):
 		return "NormalMap"
-	if low.endswith("lightmap") or low.endswith("light"):
+	if last.endswith("lightmap") or last.endswith("light"):
 		return "LightMap"
-	if low.endswith("diffuse") or low.endswith("albedo") or low.endswith("basecolor"):
+	if last.endswith("diffuse") or last.endswith("albedo") or last.endswith("basecolor"):
 		return "Diffuse"
-	if low.endswith("specular"):
+	if last.endswith("specular"):
 		return "Specular"
-	if low.endswith("emissive"):
+	if last.endswith("emissive"):
 		return "Emissive"
 	return ""
 
-
-def _extract_part_from_resource(name: str) -> str:
-	"""
-    Examples:
-      ResourceKokomiHeadDiffuse     -> KokomiHead
-      ResourceKokomiHeadLightMap    -> KokomiHead
-      Resource/KokomiHead/Diffuse   -> KokomiHead
-      Resource\\KokomiHead\\NormalMap -> KokomiHead
-    """
+def _extract_common_name_from_resource(name: str) -> str:
 	s = _strip_resource_prefix(name)
 	if not s:
 		return ""
@@ -5770,8 +6006,9 @@ def _extract_part_from_resource(name: str) -> str:
 		return ""
 
 	parts = [p for p in s.split("/") if p]
+	if not parts:
+		return ""
 
-	# path style: Resource/KokomiHead/Diffuse -> KokomiHead
 	if len(parts) >= 2:
 		last_sem = _extract_semantic(parts[-1])
 		if last_sem:
@@ -5779,46 +6016,20 @@ def _extract_part_from_resource(name: str) -> str:
 
 	last = parts[-1]
 
-	# camelcase suffix style: KokomiHeadDiffuse -> KokomiHead
 	m = TEXTURE_SUFFIX_RE.match(last)
 	if m:
 		base = m.group(1).strip("_- .")
 		if base:
 			return base
 
-	# fallback: if last itself is just a semantic word, use parent folder if present
-	if last.lower() in {x.lower() for x in TEXTURE_SUFFIXES} and len(parts) >= 2:
-		return parts[-2].strip()
+	low = last.lower()
+	for suf in TEXTURE_SUFFIXES:
+		if low.endswith(suf):
+			base = last[: -len(suf)].strip("_- .")
+			if base:
+				return base
 
 	return last.strip()
-
-
-def _line_is_texture_binding(line: str) -> bool:
-	s = (line or "").strip()
-	if not s or s.startswith(";") or s.startswith("#"):
-		return False
-
-	m = BIND_RE.match(s)
-	if not m:
-		return False
-
-	key = m.group(1).strip().lower()
-	value = m.group(3).strip().lower()
-
-	# ❌ skip non-texture commands
-	if key.startswith(("run", "ib", "vb", "draw", "dispatch")):
-		return False
-
-	# ✅ only real texture slots
-	if TEXTURE_SLOT_RE.match(key):
-		return True
-
-	# optional fallback (resource but still texture-like)
-	if "resource" in value:
-		return True
-
-	return False
-
 
 def _parse_kv(line: str):
 	m = BIND_RE.match(line or "")
@@ -5826,156 +6037,179 @@ def _parse_kv(line: str):
 		return None
 	return m.group(1).strip(), m.group(3).strip()
 
+def _is_texture_slot_line(line: str) -> bool:
+	kv = _parse_kv(line)
+	if not kv:
+		return False
+	key, value = kv
+	key_l = key.lower().strip()
+	if not TEXTURE_SLOT_RE.match(key_l):
+		return False
+	if key_l.startswith(("run", "ib", "vb", "draw", "dispatch")):
+		return False
+	return True
 
-def _build_neighbor_window(lines, start_idx: int, end_idx: int, pad: int = 10) -> str:
-	left = max(0, start_idx - pad)
-	right = min(len(lines), end_idx + pad)
-	chunk = lines[left:right]
-	while chunk and not chunk[0].strip():
-		chunk.pop(0)
-	while chunk and not chunk[-1].strip():
-		chunk.pop()
-	return "\n".join(chunk).rstrip("\n")
+def _is_hinted_run_line(line: str) -> bool:
+	kv = _parse_kv(line)
+	if not kv:
+		return False
+	key, value = kv
+	return key.lower().startswith("run") and bool(RUN_HINT_RE.search(value))
 
+def _is_control_line(line: str) -> bool:
+	s = (line or "").strip()
+	return bool(re.match(r"^(if|else|elif|endif)\b", s, re.I))
+
+def _next_meaningful_kind(lines, start_idx):
+	"""
+	Returns kind of the next meaningful non-empty/non-comment line:
+	  texture, run, control, other, end
+	"""
+	for j in range(start_idx + 1, len(lines)):
+		s = lines[j].strip()
+		if not s or s.startswith(";") or s.startswith("#"):
+			continue
+		if _is_texture_slot_line(lines[j]):
+			return "texture"
+		if _is_hinted_run_line(lines[j]):
+			return "run"
+		if _is_control_line(lines[j]):
+			return "control"
+		kv = _parse_kv(lines[j])
+		if kv:
+			key, value = kv
+			key_l = key.lower().strip()
+			if key_l.startswith(("run", "ib", "vb", "draw", "dispatch")):
+				return "other"
+			return "other"
+		return "other"
+	return "end"
 
 def find_texture_blocks(ini_text: str):
+	"""
+	One block per TextureOverride section.
+
+	Keeps:
+	  - ps-t# lines
+	  - if / else / elif / endif
+	  - run lines containing ORFix / TexFx / RabbitFX
+
+	Stops when unrelated draw/index blocks begin,
+	but continues scanning later sections.
+	"""
 	text = _normalize_text(ini_text)
 	lines = text.split("\n")
 
-	blocks_by_header = defaultdict(list)
-
+	blocks = []
 	current_section = "<GLOBAL>"
-	current_group = []
-	current_group_part = None
-	current_group_semantics = []
+	current_lines = None
+	current_name = None
+	section_closed = False
 
-	def flush_group():
-		nonlocal current_group, current_group_part, current_group_semantics
-
-		if not current_group:
-			current_group_part = None
-			current_group_semantics = []
-			return
-
-		valid_semantics = {"Diffuse", "NormalMap", "LightMap"}
-
-		sem_set = {s for s in current_group_semantics if s}
-		has_valid = bool(sem_set & valid_semantics)
-
-		if len(current_group) < 2 or not has_valid:
-			# skip trash groups
-			current_group = []
-			current_group_part = None
-			current_group_semantics = []
-			return
-
-		# All texture bindings for one part, even if they are not perfectly adjacent.
-		line_indices = [idx for idx, _ in current_group]
-		start_idx = min(line_indices)
-		end_idx = max(line_indices) + 1
-
-		core_lines = [line for _, line in current_group]
-		core_text = "\n".join(core_lines).strip("\n")
-		preview_text = _build_neighbor_window(lines, start_idx, end_idx, pad = 10)
-
-		first_key, first_value = _parse_kv(current_group[0][1])
-		part = current_group_part or _extract_part_from_resource(first_value) or _extract_part_from_resource(
-			first_key) or first_key or first_value or "Texture"
-
-		semantics = []
-		seen = set()
-		for sem in current_group_semantics:
-			if sem and sem not in seen:
-				seen.add(sem)
-				semantics.append(sem)
-
-		if len(current_group) == 1:
-			summary = part
-		else:
-			if semantics:
-				summary = f"{part}"
-			else:
-				summary = part
-
-		block = {
-			"uid": _make_uid(),
-			"header_key": (current_section, "texture"),
-			"start": start_idx,
-			"end": end_idx,
-			"text": preview_text,  # what you show in the editor
-			"core_text": core_text,  # actual grouped lines
-			"part": part,
-			"summary": summary,
-			"semantics": semantics,
-			"entries": [],
-			"key": first_key or "",
-			"value": first_value or "",
-			"comment": "",
-			"condition": "",
-		}
-
-		for idx, line in current_group:
-			parsed = _parse_kv(line)
-			if not parsed:
+	def _peek_next_meaningful(lines, i):
+		for j in range(i + 1, len(lines)):
+			s = lines[j].strip()
+			if not s or s.startswith(";"):
 				continue
-			k, v = parsed
-			block["entries"].append({
-				"line_index": idx,
-				"key": k,
-				"value": v,
-				"semantic": _extract_semantic(v or k),
-				"line": line,
-			})
+			return lines[j]
+		return None
 
-		blocks_by_header[(current_section, "texture")].append(block)
+	def flush():
+		nonlocal current_lines, current_name, section_closed
 
-		current_group = []
-		current_group_part = None
-		current_group_semantics = []
+		if not current_name or not current_lines:
+			current_lines = None
+			current_name = None
+			section_closed = False
+			return
+
+		code = "\n".join(current_lines).rstrip("\n")
+
+		blocks.append({
+			"uid": _stable_found_uid(current_section, current_name),
+			"name": current_name,
+			"code": code,
+			"origin": "found",
+			"source_section": current_section,
+			"order": len(blocks),
+			"condition": "",
+			"raw_text": code,
+			"san": _sanitize_key(current_name),
+		})
+
+		current_lines = None
+		current_name = None
+		section_closed = True
 
 	for i, line in enumerate(lines):
 		s = line.strip()
 
 		sec = re.fullmatch(r"\[([^\]]+)\]", s)
 		if sec:
-			flush_group()
+			flush()
 			current_section = sec.group(1).strip()
+			section_closed = False
 			continue
 
-		if not _is_valid_texture_section(current_section):
+		if not current_section.lower().startswith("textureoverride"):
+			continue
+
+		if section_closed:
 			continue
 
 		if not s:
-			flush_group()
+			if current_lines is not None:
+				current_lines.append(line)
 			continue
 
-		if not _line_is_texture_binding(line):
-			# ignore non-texture lines inside the section
+		if current_lines is not None and re.match(r"^(if|else|elif|endif)\b", s, re.I):
+			nxt = _peek_next_meaningful(lines, i)
+
+			if nxt:
+				kv2 = _parse_kv(nxt)
+				if kv2:
+					key2, val2 = kv2
+					key2_l = key2.lower()
+
+					if TEXTURE_SLOT_RE.match(key2_l) or (key2_l.startswith("run") and RUN_HINT_RE.search(val2)):
+						current_lines.append(line)
+						continue
+
+			# jeśli nie prowadzi do texture → zamykamy blok
+			flush()
 			continue
 
 		kv = _parse_kv(line)
 		if not kv:
+			# ignore metadata like hash / match_first_index / ib
+			# but if block already started and we hit an unrelated non-kv line,
+			# close this section's block and keep scanning the file
+			if current_lines is not None:
+				flush()
 			continue
 
 		key, value = kv
-		part = _extract_part_from_resource(value) or _extract_part_from_resource(key) or key or value or "Texture"
-		semantic = _extract_semantic(value or key)
+		key_l = key.strip().lower()
 
-		# group by shared Part
-		if current_group_part is None:
-			current_group_part = part
+		is_tex = bool(TEXTURE_SLOT_RE.match(key_l))
+		is_run = key_l.startswith("run") and RUN_HINT_RE.search(value)
 
-		# if the part changes, close previous group and start a new one
-		if part != current_group_part and current_group:
-			flush_group()
-			current_group_part = part
+		if current_lines is None:
+			if is_tex:
+				current_name = _section_to_block_name(current_section)
+				current_lines = [line]
+			continue
 
-		current_group.append((i, line))
-		current_group_semantics.append(semantic)
+		# active block: keep texture and hinted run lines
+		if is_tex or is_run:
+			current_lines.append(line)
+			continue
 
-	flush_group()
+		# any other kv line ends the active block
+		flush()
 
-	return dict(blocks_by_header)
+	flush()
+	return blocks
 
 
 # ------------------------------------------------------------
@@ -5984,782 +6218,287 @@ def find_texture_blocks(ini_text: str):
 
 class TextureEditorPage(QWidget):
 	"""
-    Textures/resource bindings editor page.
-    Stores edits under:
-      saved_edits[filename]["__textures__"][header_name][uid] = {...}
-    """
+	Quick Texture Block Editor (INI → found → saved_edits)
+
+	saved_edits[filename]["__textures__"][uid] = {
+		name, code, origin, order, source_section
+	}
+	"""
 
 	def __init__(self, ini_text, parent=None, filename=None, saved_edits=None):
 		super().__init__(parent)
 
-		if saved_edits is None or filename == "":
-			saved_edits = {}
-
 		self.parent = parent
-		self.filename = filename
-		self.ini_text = ini_text
-		self.saved_edits = saved_edits
+		self.filename = filename or "__SESSION__"
+		self.ini_text = ini_text or ""
+		self.saved_edits = saved_edits if saved_edits is not None else {}
 
-		self.blocks_by_header = find_texture_blocks(self.ini_text)
-		self.header_keys = sorted(self.blocks_by_header.keys(), key = lambda x: (x[0] != "<GLOBAL>", x[0].lower()))
+		# 🔥 PARSE INI (Twój parser)
+		self.blocks_by_ini = find_texture_blocks(self.ini_text)
 
 		self._build_ui()
+		self._seed_from_ini()
+		self.reload_blocks()
 
-		if self.header_keys:
-			self.header_list.setCurrentRow(0)
-			self.update_block_list(0)
+	# --------------------------------------------------
+	# STORAGE
+	# --------------------------------------------------
 
-		if self.parent is not None:
-			setattr(self.parent, "texture_dialog", self)
+	def _root(self):
+		self.saved_edits.setdefault(self.filename, {})
+		self.saved_edits[self.filename].setdefault("__textures__", {})
+		return self.saved_edits[self.filename]["__textures__"]
 
-	def _split_outer_if_block(self, text: str):
-		text = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-		lines = text.split("\n")
+	def _seed_from_ini(self):
+		root = self._root()
 
-		if len(lines) < 3:
-			return False, "", text
+		for i, b in enumerate(self.blocks_by_ini):
+			uid = b["uid"]
 
-		first = lines[0].strip()
-		last = lines[-1].strip().lower()
+			if uid in root:
+				continue
 
-		if not first.lower().startswith("if ") or last != "endif":
-			return False, "", text
+			root[uid] = {
+				"name": b.get("name", "Block"),
+				"code": b.get("code", ""),
+				"origin": "found",
+				"order": b.get("order", i),
+				"source_section": b.get("source_section", ""),
+			}
 
-		cond = first[3:].strip()
-		body = "\n".join(lines[1:-1]).strip("\n")
-		return True, cond, body
-
-	def _apply_condition_to_raw_text(self, raw_text: str, cond: str) -> str:
-		raw_text = (raw_text or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-		cond = (cond or "").strip()
-
-		is_if, old_cond, body = self._split_outer_if_block(raw_text)
-
-		if cond:
-			if not cond.startswith("$"):
-				cond = "$" + cond
-
-			if is_if:
-				return f"if {cond}\n{body}\nendif"
-
-			return f"if {cond}\n{raw_text}\nendif"
-
-		return body if is_if else raw_text
-
-	def _find_selected_line_range(self, lines, selected_text: str):
-		selected_text = (selected_text or "").replace("\u2029", "\n").strip("\n")
-		if not selected_text:
-			return None
-
-		sel_lines = [l.strip() for l in selected_text.split("\n") if l.strip()]
-		if not sel_lines:
-			return None
-
-		n = len(lines)
-		m = len(sel_lines)
-
-		for i in range(n - m + 1):
-			chunk = [lines[i + j].strip() for j in range(m)]
-			if chunk == sel_lines:
-				return i, i + m, sel_lines
-
-		return None
-
-	def wrap_selected_with_if(self):
-		import textwrap
-
-		text = self.raw_block_edit.toPlainText().replace("\r\n", "\n").replace("\r", "\n")
-		cur = self.raw_block_edit.textCursor()
-
-		# fallback: brak zaznaczenia
-		if not cur.hasSelection():
-			raw = text.strip("\n")
-			if not raw:
-				return
-			self.raw_block_edit.setPlainText(
-				self._apply_condition_to_raw_text(raw, self.condition_edit.text())
-			)
-			return
-
-		selected = cur.selectedText().replace("\u2029", "\n").strip("\n")
-		if not selected:
-			return
-
-		lines = text.split("\n")
-		sel_info = self._find_selected_line_range(lines, selected)
-
-		# fallback jeśli nie znaleziono dokładnego matcha
-		if not sel_info:
-			wrapped = self._apply_condition_to_raw_text(selected, self.condition_edit.text())
-			cur.insertText(wrapped)
-			return
-
-		sel_start, sel_end, sel_lines = sel_info
-
-		cond = self.condition_edit.text().strip()
-
-		# znajdź istniejący IF
-		def find_if_block():
-			for i in range(len(lines)):
-				if lines[i].strip().lower().startswith("if "):
-					depth = 0
-					for j in range(i, len(lines)):
-						s = lines[j].strip().lower()
-						if s.startswith("if "):
-							depth += 1
-						elif s == "endif":
-							depth -= 1
-							if depth == 0:
-								return i, j
-			return None
-
-		if_block = find_if_block()
-
-		# jeśli brak IF → wrap normalny
-		if not if_block:
-			wrapped = self._apply_condition_to_raw_text(selected, cond)
-			cur.insertText(wrapped)
-			return
-
-		if_start, if_end = if_block
-
-		# jeśli już w IF → nic nie rób
-		if if_start < sel_start < if_end:
-			return
-
-		body_indent = ""
-		for i in range(if_start + 1, if_end):
-			if lines[i].strip():
-				body_indent = re.match(r"\s*", lines[i]).group(0)
-				break
-		if not body_indent:
-			body_indent = "\t"
-
-		moved = textwrap.dedent("\n".join(sel_lines)).split("\n")
-		moved = [body_indent + l if l.strip() else "" for l in moved]
-
-		new_lines = lines[:]
-
-		# usuń zaznaczenie
-		for i in range(sel_end - 1, sel_start - 1, -1):
-			del new_lines[i]
-
-		insert_at = if_start + 1
-
-		new_lines[insert_at:insert_at] = moved + [""]
-
-		self.raw_block_edit.setPlainText("\n".join(new_lines).rstrip("\n"))
+	# --------------------------------------------------
+	# UI
+	# --------------------------------------------------
 
 	def _build_ui(self):
 		layout = QVBoxLayout(self)
 
-		layout.addWidget(QLabel("Section (Header)"))
-		self.header_list = QListWidget()
-		for name, kind in self.header_keys:
-			label = f"{name}" if name != "<GLOBAL>" else "<GLOBAL>"
-			it = QListWidgetItem(label)
-			it.setData(Qt.UserRole, (name, kind))
-			self.header_list.addItem(it)
-		layout.addWidget(self.header_list)
-
 		layout.addWidget(QLabel("Texture Blocks"))
+
 		self.block_list = QListWidget()
 		self.block_list.setSelectionMode(QAbstractItemView.SingleSelection)
-		layout.addWidget(self.block_list)
 
 		mono = QFont("Consolas")
 		mono.setPointSize(10)
 		self.block_list.setFont(mono)
 
-		# fields
-		row1 = QHBoxLayout()
-		row1.addWidget(QLabel("Key"))
-		self.key_edit = QLineEdit()
-		row1.addWidget(self.key_edit)
-		row1.addWidget(QLabel("Value"))
-		self.value_edit = QLineEdit()
-		row1.addWidget(self.value_edit)
-		layout.addLayout(row1)
-
-		row2 = QHBoxLayout()
-		# row2.addWidget(QLabel("Comment"))
-		self.comment_edit = QLineEdit()
-		# row2.addWidget(self.comment_edit)
-		row2.addWidget(QLabel("Condition"))
-		self.condition_edit = QLineEdit()
-		row2.addWidget(self.condition_edit)
-		layout.addLayout(row2)
-
-		layout.addWidget(QLabel("Neighboring Lines / Raw Binding"))
-		self.raw_block_edit = QTextEdit()
-		self.raw_block_edit.setFont(mono)
-		self.raw_block_edit.setPlaceholderText("Editable")
-		layout.addWidget(self.raw_block_edit)
-
-		# Buttons
-		self.btn_wrap_if = QPushButton("Wrap Selected / Move If")
-		self.btn_wrap_if.clicked.connect(self.wrap_selected_with_if)
-		self.btn_move_up = QPushButton("Move Up")
-		self.btn_move_down = QPushButton("Move Down")
-		self.btn_copy = QPushButton("Duplicate")
-		self.btn_delete = QPushButton("Delete")
-		self.btn_add = QPushButton("Add New")
-		# self.btn_apply = QPushButton("Apply Edits")
-		# self.btn_close = QPushButton("Close")
-
-		self.btn_move_up.clicked.connect(self.move_selected_up)
-		self.btn_move_down.clicked.connect(self.move_selected_down)
-		self.btn_copy.clicked.connect(self.duplicate_selected)
-		self.btn_delete.clicked.connect(self.delete_selected)
-		self.btn_add.clicked.connect(self.add_new_entry)
-		# self.btn_apply.clicked.connect(self.apply_edits_to_parent)
-		# self.btn_close.clicked.connect(self._close_request)
+		layout.addWidget(self.block_list)
 
 		row = QHBoxLayout()
-		row.addWidget(self.btn_wrap_if)
-		row.addWidget(self.btn_move_up)
-		row.addWidget(self.btn_move_down)
-		row.addWidget(self.btn_copy)
-		row.addWidget(self.btn_delete)
-		row.addWidget(self.btn_add)
-		# row.addWidget(self.btn_apply)
-		# row.addWidget(self.btn_close)
+		row.addWidget(QLabel("Block Name"))
+		self.name_edit = QLineEdit()
+		row.addWidget(self.name_edit)
 		layout.addLayout(row)
 
-		self.header_list.currentRowChanged.connect(self.update_block_list)
-		self.block_list.currentRowChanged.connect(self.load_block_fields)
+		layout.addWidget(QLabel("Block Code"))
+		self.code_edit = QTextEdit()
+		self.code_edit.setFont(mono)
+		layout.addWidget(self.code_edit)
 
-	# ---------------- saved_edits helpers ----------------
+		btn_row = QHBoxLayout()
 
-	def _textures_root(self):
-		self.saved_edits.setdefault(self.filename, {})
-		self.saved_edits[self.filename].setdefault("__textures__", {})
-		return self.saved_edits[self.filename]["__textures__"]
+		self.btn_add = QPushButton("Add")
+		self.btn_delete = QPushButton("Delete")
 
-	def _get_header_edits(self, header_name):
-		if not self.filename:
-			return {}
-		return self.saved_edits.get(self.filename, {}).get("__textures__", {}).get(header_name, {})
+		btn_row.addWidget(self.btn_add)
+		btn_row.addWidget(self.btn_delete)
 
-	def _ensure_header_slot(self, header_name, uid):
-		self.saved_edits.setdefault(self.filename, {})
-		self.saved_edits[self.filename].setdefault("__textures__", {})
-		self.saved_edits[self.filename]["__textures__"].setdefault(header_name, {})
-		self.saved_edits[self.filename]["__textures__"][header_name].setdefault(uid, {})
-		return self.saved_edits[self.filename]["__textures__"][header_name][uid]
+		layout.addLayout(btn_row)
 
-	# ---------------- UI list ----------------
+		# signals
+		self.block_list.currentRowChanged.connect(self.load_block)
+		self.btn_add.clicked.connect(self.add_block)
+		self.btn_delete.clicked.connect(self.delete_block)
 
-	def update_block_list(self, idx):
+		self.name_edit.textEdited.connect(self.save_current)
+		self.code_edit.textChanged.connect(self.save_current)
+
+	# --------------------------------------------------
+	# UI LOGIC
+	# --------------------------------------------------
+
+	def reload_blocks(self, select_uid=None):
+		root = self._root()
+
+		items = sorted(
+			root.items(),
+			key = lambda x: (
+				x[1].get("order", 0),
+				(x[1].get("name") or "").lower()
+			)
+		)
+
+		self.block_list.blockSignals(True)
 		self.block_list.clear()
-		if idx < 0 or idx >= len(self.header_keys):
-			return
-		header_key = self.header_keys[idx]
-		self.populate_and_reapply(header_key)
 
-	def _label_for_block(self, b, header_key):
-		name, kind = header_key
-		uid = b.get("uid", "unknown")
-		header_edits = self._get_header_edits(name)
-		edited = uid in header_edits
-
-		part = b.get("part") or b.get("summary") or b.get("key", "Texture")
-		flag = "* " if edited else ""
-		return f"{flag}{part} | {uid}"
-
-	def populate_and_reapply(self, header_key):
-		if isinstance(header_key, list):
-			header_key = tuple(header_key)
-
-		self.block_list.clear()
-		blist = self.blocks_by_header.get(header_key, [])
-
-		name, kind = header_key
-		for b in blist:
-			uid = b.get("uid")
-			header_edits = self._get_header_edits(name)
-			part = b.get("part") or b.get("summary") or b.get("key", "Texture")
-
-			if uid in header_edits:
-				label = f"* {part} | {uid}"
-			else:
-				label = f"{part} | {uid}"
-
+		for uid, data in items:
+			label = self._label(uid, data)
 			it = QListWidgetItem(label)
-			it.setData(Qt.UserRole, (header_key, b))
+			it.setData(Qt.UserRole, uid)
 			self.block_list.addItem(it)
 
-		if blist:
+		self.block_list.blockSignals(False)
+
+		# restore selection
+		if select_uid:
+			for i in range(self.block_list.count()):
+				if self.block_list.item(i).data(Qt.UserRole) == select_uid:
+					self.block_list.setCurrentRow(i)
+					return
+
+		if self.block_list.count():
 			self.block_list.setCurrentRow(0)
 
-	# ---------------- load/save fields ----------------
+	def _label(self, uid, data):
+		name = data.get("name", "Block")
+		origin = data.get("origin", "found")
 
-	def load_block_fields(self, idx):
-		if idx < 0:
-			self.key_edit.clear()
-			self.value_edit.clear()
-			self.comment_edit.clear()
-			self.condition_edit.clear()
-			self.raw_block_edit.clear()
-			return
+		if origin == "added":
+			return f"+ {name}"
+		return name
 
-		item = self.block_list.item(idx)
-		header_key, block = item.data(Qt.UserRole)
-
-		name, kind = header_key
-		uid = block.get("uid")
-		header_edits = self._get_header_edits(name)
-		ed = header_edits.get(uid, {})
-
-		self.key_edit.setText(ed.get("key", block.get("key", "")))
-		self.value_edit.setText(ed.get("value", block.get("value", "")))
-		self.comment_edit.setText(ed.get("comment", block.get("comment", "")))
-		self.condition_edit.setText(ed.get("condition", block.get("condition", "")))
-
-		raw_text = ed.get("raw_text", "")
-		if not raw_text.strip():
-			raw_text = block.get("text", "")  # +-10 lines around the grouped block
-
-		self.raw_block_edit.setPlainText(raw_text.rstrip("\n"))
-
-	def _extract_core_texture_block_from_preview(self, preview_text: str, block: dict) -> str:
-		preview_text = _normalize_text(preview_text).strip("\n")
-		if not preview_text.strip():
-			return block.get("core_text", "") or block.get("text", "") or ""
-
-		core_text = (block.get("core_text", "") or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-		if not core_text:
-			return preview_text
-
-		if core_text in preview_text:
-			return core_text
-
-		preview_lines = preview_text.split("\n")
-		core_lines = core_text.split("\n")
-
-		# line-wise exact match fallback
-		for i in range(len(preview_lines) - len(core_lines) + 1):
-			chunk = preview_lines[i:i + len(core_lines)]
-			if [c.strip() for c in chunk] == [c.strip() for c in core_lines]:
-				return "\n".join(chunk).strip("\n")
-
-		return core_text
-
-	def save_changes_local(self):
-		idx = self.block_list.currentRow()
-		if idx < 0:
-			return
-
-		it = self.block_list.item(idx)
-		header_key, block = it.data(Qt.UserRole)
-
-		name, kind = header_key
-		uid = block.get("uid")
-
-		slot = self._ensure_header_slot(name, uid)
-		slot.update({
-			"key": self.key_edit.text().strip(),
-			"value": self.value_edit.text().strip(),
-			"comment": self.comment_edit.text().strip(),
-			"condition": self.condition_edit.text().strip(),
-			"raw_text": self.raw_block_edit.toPlainText().strip("\n"),
-			"summary": f"{self.key_edit.text().strip()} -> {self.value_edit.text().strip()}",
-		})
-
-		it.setText(self._label_for_block(block, header_key))
-
-	# ---------------- block render/apply ----------------
-
-	def _split_outer_if(self, text: str):
-		raw = _norm_text(text).strip("\n")
-		lines = raw.split("\n")
-		if len(lines) < 3:
-			return False, "", text or ""
-
-		first = lines[0].strip()
-		last = lines[-1].strip().lower()
-
-		if not first.lower().startswith("if ") or last != "endif":
-			return False, "", text or ""
-
-		cond = first[3:].strip()
-		body = "\n".join(lines[1:-1]).strip("\n")
-		return True, cond, body
-
-	def _apply_condition_to_raw_text(self, raw_text: str, cond: str) -> str:
-		raw_text = _norm_text(raw_text).strip("\n")
-		cond = (cond or "").strip()
-
-		is_if, old_cond, body = self._split_outer_if(raw_text)
-
-		if cond:
-			if not cond.startswith("$"):
-				cond = "$" + cond
-			if is_if:
-				return f"if {cond}\n{body}\nendif"
-			return f"if {cond}\n{raw_text}\nendif"
-
-		return body if is_if else raw_text
-
-	def _normalize_binding_text(self, text: str) -> str:
-		text = _norm_text(text).rstrip("\n")
-		if not text:
-			return ""
-		return text + "\n\n"
-
-	def _build_effective_texture_block(self, block, ed=None):
-		ed = ed or {}
-
-		key = (ed.get("key", block.get("key", "")) or "").strip()
-		value = (ed.get("value", block.get("value", "")) or "").strip()
-		comment = (ed.get("comment", block.get("comment", "")) or "").strip()
-		cond = (ed.get("condition", block.get("condition", "")) or "").strip()
-		raw_text = (ed.get("raw_text", "") or "").strip("\n")
-
-		if raw_text.strip():
-			core = self._extract_core_texture_block_from_preview(raw_text, block)
-			core = _normalize_text(core).strip("\n")
-			if cond:
-				if not cond.startswith("$"):
-					cond = "$" + cond
-				core = f"if {cond}\n{core}\nendif"
-			return self._normalize_binding_text(core)
-
-		if not key:
-			key = block.get("key", "")
-		if not value:
-			value = block.get("value", "")
-
-		lines = []
-		if cond:
-			if not cond.startswith("$"):
-				cond = "$" + cond
-			lines.append(f"if {cond}")
-			if comment:
-				lines.append(f"    ; {comment}")
-			lines.append(f"    {key} = {value}")
-			lines.append("endif")
-		else:
-			if comment:
-				lines.append(f"; {comment}")
-			lines.append(f"{key} = {value}")
-
-		return self._normalize_binding_text("\n".join(lines))
-
-	# ---------------- editing operations ----------------
-
-	def _selected_header_and_index(self):
-		idx = self.block_list.currentRow()
-		if idx < 0:
-			return None, None, None
-		item = self.block_list.item(idx)
+	def _current_uid(self):
+		item = self.block_list.currentItem()
 		if not item:
-			return None, None, None
-		header_key, block = item.data(Qt.UserRole)
-		header_key = tuple(header_key)
-		return idx, header_key, block
+			return None
+		return item.data(Qt.UserRole)
 
-	def duplicate_selected(self):
-		idx, header_key, block = self._selected_header_and_index()
-		if block is None:
+	def load_block(self, row):
+		uid = self._current_uid()
+
+		if not uid:
+			self.name_edit.clear()
+			self.code_edit.clear()
 			return
 
-		name, kind = header_key
-		blist = self.blocks_by_header.get(header_key, [])
-		pos = next((i for i, b in enumerate(blist) if b.get("uid") == block.get("uid")), -1)
-		if pos < 0:
+		data = self._root()[uid]
+
+		self.name_edit.blockSignals(True)
+		self.code_edit.blockSignals(True)
+
+		self.name_edit.setText(data.get("name", ""))
+		self.code_edit.setPlainText(data.get("code", ""))
+
+		self.name_edit.blockSignals(False)
+		self.code_edit.blockSignals(False)
+
+	def save_current(self):
+		uid = self._current_uid()
+		if not uid:
 			return
 
-		clone = copy.deepcopy(block)
-		clone["uid"] = _make_uid()
+		root = self._root()
+		data = root[uid]
 
-		# saved edits duplicate
-		header_edits = self._get_header_edits(name)
-		if block.get("uid") in header_edits:
-			self._ensure_header_slot(name, clone["uid"])
-			self.saved_edits[self.filename]["__textures__"][name][clone["uid"]] = copy.deepcopy(
-				header_edits[block["uid"]])
+		data["name"] = self.name_edit.text().strip() or "Block"
+		data["code"] = self.code_edit.toPlainText().rstrip("\n")
 
-		blist.insert(pos + 1, clone)
-		self._renumber_variant_indices(header_key)
-		self.populate_and_reapply(header_key)
-		self.block_list.setCurrentRow(pos + 1)
+		item = self.block_list.currentItem()
+		if item:
+			item.setText(self._label(uid, data))
 
-	def move_selected_up(self):
-		idx, header_key, block = self._selected_header_and_index()
-		if block is None:
-			return
+	# --------------------------------------------------
+	# ACTIONS
+	# --------------------------------------------------
 
-		blist = self.blocks_by_header.get(header_key, [])
-		pos = next((i for i, b in enumerate(blist) if b.get("uid") == block.get("uid")), -1)
-		if pos <= 0:
-			return
+	def add_block(self):
+		root = self._root()
 
-		blist[pos - 1], blist[pos] = blist[pos], blist[pos - 1]
-		self._renumber_variant_indices(header_key)
-		self.populate_and_reapply(header_key)
-		self.block_list.setCurrentRow(pos - 1)
+		uid = _make_uid()
 
-	def move_selected_down(self):
-		idx, header_key, block = self._selected_header_and_index()
-		if block is None:
-			return
+		next_order = max([v.get("order", 0) for v in root.values()], default=0) + 1
 
-		blist = self.blocks_by_header.get(header_key, [])
-		pos = next((i for i, b in enumerate(blist) if b.get("uid") == block.get("uid")), -1)
-		if pos < 0 or pos >= len(blist) - 1:
-			return
-
-		blist[pos + 1], blist[pos] = blist[pos], blist[pos + 1]
-		self._renumber_variant_indices(header_key)
-		self.populate_and_reapply(header_key)
-		self.block_list.setCurrentRow(pos + 1)
-
-	def delete_selected(self):
-		idx, header_key, block = self._selected_header_and_index()
-		if block is None:
-			return
-
-		if isinstance(header_key, list):
-			header_key = tuple(header_key)
-
-		blist = self.blocks_by_header.get(header_key, [])
-		pos = next((i for i, b in enumerate(blist) if b.get("uid") == block.get("uid")), -1)
-		if pos < 0:
-			return
-
-		name, kind = header_key
-		uid = block.get("uid")
-
-		# remove edits if any
-		if self.filename:
-			tex_root = self.saved_edits.get(self.filename, {}).get("__textures__", {})
-			if name in tex_root and uid in tex_root[name]:
-				del tex_root[name][uid]
-
-		del blist[pos]
-		self._renumber_variant_indices(header_key)
-		self.populate_and_reapply(header_key)
-
-	def add_new_entry(self):
-		cur_row = self.header_list.currentRow()
-		if cur_row < 0:
-			return
-		header_key = self.header_keys[cur_row]
-		header_name, header_kind = header_key
-
-		new_block = {
-			"uid": _make_uid(),
-			"header_key": header_key,
-			"start": 0,
-			"end": 0,
-			"text": "",
-			"comment": "",
-			"key": "ps-t0",
-			"value": "Resource...",
-			"condition": "",
-			"raw_text": "",
-			"san": _sanitize_key("ps-t0"),
-			"variant_index": 0,
+		root[uid] = {
+			"name": "NewBlock",
+			"code": "ps-t0 = Resource...",
+			"origin": "added",
+			"order": next_order,
+			"source_section": "",
 		}
 
-		self.blocks_by_header.setdefault(header_key, []).append(new_block)
-		self._renumber_variant_indices(header_key)
+		self.reload_blocks(select_uid=uid)
 
-		self.populate_and_reapply(header_key)
-		self.block_list.setCurrentRow(self.block_list.count() - 1)
-
-	def _renumber_variant_indices(self, header_key):
-		blist = self.blocks_by_header.get(header_key, [])
-		counts = defaultdict(int)
-		for b in blist:
-			san = b.get("san", _sanitize_key(b.get("key", "")))
-			b["san"] = san
-			b["variant_index"] = counts[san]
-			counts[san] += 1
-
-	# ---------------- close/apply ----------------
-
-	def _close_request(self):
-		self.parent = self.parent  # no-op, explicit
-		self.hide()
-
-	def apply_edits_to_parent(self):
-		self.save_changes_local()
-
-		if not (self.parent and hasattr(self.parent, "ini_editor")):
-			QMessageBox.warning(self, "No parent", "Parent editor not available.")
+	def delete_block(self):
+		uid = self._current_uid()
+		if not uid:
 			return
 
-		if "editor" in globals() and editor:
-			try:
-				editor.allow_alert = False
-				editor.rebuild_ini(False)
-			except Exception:
-				pass
+		root = self._root()
 
-		base_text = self.parent.ini_editor.toPlainText()
-		new_text = self._apply_texture_edits_to_ini(base_text)
-		self.parent.ini_editor.setPlainText(new_text)
-		self.refresh_from_ini(new_text)
+		if uid in root:
+			del root[uid]
 
-	def _apply_texture_edits_to_ini(self, base_text: str) -> str:
-		"""
-        Rebuilds texture lines by replacing the original texture binding spans.
-        Keeps unrelated text intact.
-        """
-		base_text = _norm_text(base_text)
-		current_blocks = find_texture_blocks(base_text)
-
-		# flatten current file blocks in source order
-		all_blocks = []
-		for header_key, blist in current_blocks.items():
-			for b in blist:
-				all_blocks.append((b["start"], b["end"], header_key, b))
-
-		if not all_blocks:
-			return base_text
-
-		all_blocks.sort(key = lambda x: x[0], reverse = True)
-
-		text = base_text
-		for s, e, header_key, b in all_blocks:
-			header_name, header_kind = header_key
-			ed = self._get_header_edits(header_name).get(b["uid"], {})
-			new_block = self._build_effective_texture_block(b, ed)
-			text = text[:s] + new_block + text[e:]
-
-		return text
+		self.reload_blocks()
 
 	def refresh_from_ini(self, new_ini_text: str):
-		self.ini_text = new_ini_text
-		self.blocks_by_header = find_texture_blocks(self.ini_text)
-		self.header_keys = sorted(self.blocks_by_header.keys(), key = lambda x: (x[0] != "<GLOBAL>", x[0].lower()))
+		"""
+		Resync from INI without losing saved_edits.
+		Keeps saved_edits as source of truth and only seeds missing found blocks.
+		"""
+		self.ini_text = new_ini_text or ""
+		self.blocks_by_ini = find_texture_blocks(self.ini_text)
+		self._seed_from_ini()
+		self.reload_blocks(select_uid = self._current_uid())
 
-		prev_data = None
-		cur_row = self.header_list.currentRow()
-		if 0 <= cur_row < self.header_list.count():
-			prev_data = self.header_list.item(cur_row).data(Qt.UserRole)
+	def get_all_blocks_for_insert(self):
+		"""
+		Returns [(label, code), ...] for the QuickInsert panel.
+		"""
+		root = self._root()
 
-		self.header_list.blockSignals(True)
-		self.header_list.clear()
+		items = sorted(
+			root.items(),
+			key=lambda x: (
+				x[1].get("order", 0),
+				(x[1].get("name") or "").lower()
+			)
+		)
 
-		for name, kind in self.header_keys:
-			label = f"{name}" if name != "<GLOBAL>" else "<GLOBAL>"
-			it = QListWidgetItem(label)
-			it.setData(Qt.UserRole, (name, kind))
-			self.header_list.addItem(it)
+		result = []
+		for uid, data in items:
+			name = data.get("name", "Block")
+			code = data.get("code", "")
+			origin = data.get("origin", "found")
+			label = f"+ {name}" if origin == "added" else name
+			result.append((label, code))
 
-		if prev_data:
-			for i in range(self.header_list.count()):
-				if self.header_list.item(i).data(Qt.UserRole) == prev_data:
-					self.header_list.setCurrentRow(i)
-					break
-		elif self.header_keys:
-			self.header_list.setCurrentRow(0)
-
-		self.header_list.blockSignals(False)
-
-		sel = self.header_list.currentRow()
-		if sel >= 0:
-			key = self.header_list.item(sel).data(Qt.UserRole)
-			self.populate_and_reapply(key)
-
+		return result
 
 # ------------------------------------------------------------
 # Combined tabbed dialog
 # ------------------------------------------------------------
 
-class BindingsEditorDialog(QDialog):
-	"""
-    Tab 1: DrawIndexed (your current class, moved into QWidget)
-    Tab 2: Textures
-    """
 
-	def __init__(self, ini_text, parent=None, filename=None, saved_edits=None):
-		super().__init__(parent)
-
-		if saved_edits is None or filename == "":
-			saved_edits = {}
-
-		self.setWindowTitle("Bindings Editor")
-		self.resize(1100, 760)
-
-		self.parent = parent
-		self.filename = filename
-		self.ini_text = ini_text
-		self.saved_edits = saved_edits
-
-		layout = QVBoxLayout(self)
-
-		self.tabs = QTabWidget()
-		layout.addWidget(self.tabs)
-
-		# Tab 1: your existing DrawIndexed page
-		self.draw_page = DrawIndexedPage(self.ini_text, parent = self.parent, filename = self.filename,
-										 saved_edits = self.saved_edits)
-		self.tabs.addTab(self.draw_page, "DrawIndexed")
-
-		# Tab 2: textures
-		self.texture_page = TextureEditorPage(self.ini_text, parent = self.parent, filename = self.filename,
-											  saved_edits = self.saved_edits)
-		self.tabs.addTab(self.texture_page, "Textures")
-
-		# bottom row
-		btn_row = QHBoxLayout()
-		self.btn_apply_all = QPushButton("Apply")
-		self.btn_close = QPushButton("Close")
-		btn_row.addWidget(self.btn_apply_all)
-		btn_row.addWidget(self.btn_close)
-		layout.addLayout(btn_row)
-
-		self.btn_apply_all.clicked.connect(self.apply_all)
-		self.btn_close.clicked.connect(self.accept)
-
-		if self.parent is not None:
-			setattr(self.parent, "bindings_dialog", self)
-
-	def apply_all(self):
-		# DrawIndexed page must expose apply_edits_to_parent()
-		if hasattr(self.draw_page, "apply_edits_to_parent"):
-			self.draw_page.apply_edits_to_parent()
-
-		if hasattr(self.texture_page, "apply_edits_to_parent"):
-			self.texture_page.apply_edits_to_parent()
-
-		# refresh both pages from current ini text
-		if hasattr(self.parent, "ini_editor"):
-			new_text = self.parent.ini_editor.toPlainText()
-			if hasattr(self.draw_page, "refresh_from_ini"):
-				self.draw_page.refresh_from_ini(new_text)
-			if hasattr(self.texture_page, "refresh_from_ini"):
-				self.texture_page.refresh_from_ini(new_text)
-
+#
+		#if hasattr(self.texture_page, "apply_edits_to_parent"):
+		#    self.texture_page.apply_edits_to_parent()
 
 # -------------------- Dialog class --------------------
 class DrawIndexedPage(QWidget):
-	def __init__(self, ini_text, parent=None, filename=None, saved_edits=None):
+	def __init__(self, ini_text, parent=None, filename=None, saved_edits=None, debug=False):
 		super().__init__(parent)
 
-		if saved_edits is None or filename == "":
+		if saved_edits is None:
 			saved_edits = {}
 
 		self.setWindowTitle("Conditions Editor")
 		self.resize(800, 600)
 
 		self.parent = parent
-		self.filename = filename
-		self.ini_text = ini_text
-
-		# JSON-safe structure:
-		# saved_edits[filename][header_name][san][vidx] = {...}
+		self.filename = filename or "__SESSION__"
+		self.ini_text = ini_text or ""
 		self.saved_edits = saved_edits
 
-		# parse blocks
-		self.blocks_by_header = find_drawindexed_blocks(self.ini_text)
-		self.header_keys = sorted(self.blocks_by_header.keys(), key = lambda x: (x[0] != "<GLOBAL>", x[0].lower()))
+		self._current_block_key = None
+		self._raw_text_loaded = ""
+		self._raw_text_dirty = False
 
-		# --- UI ---
+		self.blocks_by_header = find_drawindexed_blocks(self.ini_text)
+		self.header_keys = sorted(self.blocks_by_header.keys(), key=lambda x: (x[0] != "<GLOBAL>", x[0].lower()))
+
+		if debug:
+			print(f"[DrawIndexedPage] init: filename={self.filename!r}, headers={len(self.header_keys)}, ini_len={len(self.ini_text)}")
+
 		layout = QVBoxLayout(self)
 
 		layout.addWidget(QLabel("Section (Header)"))
@@ -6774,298 +6513,165 @@ class DrawIndexedPage(QWidget):
 		layout.addWidget(QLabel("DrawIndexed Blocks"))
 		self.block_list = QListWidget()
 		self.block_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
-		layout.addWidget(self.block_list)
-
-		self.create_conditions_btn = QPushButton("Create Comments-based Conditions for Selected")
-		layout.addWidget(self.create_conditions_btn)
-		self.create_conditions_btn.clicked.connect(self.create_conditions_from_comments)
-
 		mono = QFont("Consolas")
 		mono.setPointSize(10)
 		self.block_list.setFont(mono)
+		layout.addWidget(self.block_list)
+
+		self.create_conditions_btn = QPushButton("Create Comments-based Conditions for Selected")
+		self.create_conditions_btn.clicked.connect(self.create_conditions_from_comments)
+		layout.addWidget(self.create_conditions_btn)
 
 		layout.addWidget(QLabel("Comment"))
 		self.comment_edit = QLineEdit()
 		layout.addWidget(self.comment_edit)
+
 		layout.addWidget(QLabel("DrawIndexed"))
 		self.draw_edit = QLineEdit()
 		layout.addWidget(self.draw_edit)
+
 		layout.addWidget(QLabel("Condition (if)"))
-
-		def extract_variables(code, blocks_by_header):
-
-			# -------- globals --------
-
-			globals_found = set(re.findall(
-				r"global (?:persist )?(\$[a-zA-Z]\w+)",
-				code
-			))
-
-			# -------- comments → vars --------
-
-			def sanitize(s):
-
-				s = s or ""
-
-				s = re.sub(r"\(.+?\)", "", s)
-
-				s = re.sub(r"[^A-Za-z0-9]", "", s)
-
-				return s
-
-			def remove_digits(s):
-
-				return re.sub(r"\d+$", "", s)
-
-			comment_vars = set()
-
-			for blocks in blocks_by_header.values():
-
-				for b in blocks:
-
-					name = b.get("comment") or b.get("draw") or ""
-
-					san = sanitize(name)
-
-					base = remove_digits(san)
-
-					if not base:
-						continue
-
-					var = base.capitalize()
-
-					if var[0].isdigit():
-						var = "x" + var
-
-					comment_vars.add("$" + var)
-
-			# -------- merge --------
-
-			return sorted(
-				globals_found | comment_vars
-			)
-
-		self.condition_edit = AutoCompleteTextEdit(
-			extract_variables(
-				editor.ini_editor.toPlainText(),
-				self.blocks_by_header
-			)
-		)
-
+		self.condition_edit = AutoCompleteTextEdit([])
 		self.condition_edit.setPlainText("")
 		self.condition_edit.setFixedHeight(24)
-
 		self.highlighter = IniHighlighter(self.condition_edit.document())
-
 		layout.addWidget(self.condition_edit)
 
+		layout.addWidget(QLabel("Neighboring Lines"))
 		self.raw_block_edit = QTextEdit()
 		self.raw_block_edit.setFont(mono)
 		self.raw_block_edit.setPlaceholderText("Editable")
-		layout.addWidget(QLabel("Neighboring Lines"))
 		layout.addWidget(self.raw_block_edit)
 
-		self.btn_wrap_if = QPushButton("Wrap Selected / Move If")
+		self.btn_wrap_if = QPushButton("Wrap Selected")
 		self.btn_wrap_if.clicked.connect(self.wrap_selected_with_if)
 
 		row = QHBoxLayout()
-		# self.save_btn = QPushButton("Save Changes (local)")
-		# self.apply_btn = QPushButton("Apply Edits")
-		# self.close_btn = QPushButton("Close")
-		# row.addWidget(self.save_btn)
 		row.addWidget(self.btn_wrap_if)
-		# row.addWidget(self.apply_btn)
-		# row.addWidget(self.close_btn)
-
 		layout.addLayout(row)
 
 		self.header_list.currentRowChanged.connect(self.update_block_list)
 		self.block_list.currentRowChanged.connect(self.load_block_fields)
-		# self.save_btn.clicked.connect(self.save_changes_local)
-		# self.apply_btn.clicked.connect(self.apply_edits_to_parent)
-		# self.close_btn.clicked.connect(self.accept)
 
 		if self.header_keys:
 			self.header_list.setCurrentRow(0)
 			self.update_block_list(0)
 
-		if self.parent is not None:
-			setattr(self.parent, "bindings_dialog", self)
+		self.raw_block_edit.textChanged.connect(self._mark_raw_dirty)
 
-	def _extract_core_block_from_preview(self, preview_text: str, block: dict) -> str:
-		preview_text = (preview_text or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-		if not preview_text.strip():
-			return block.get("text", "") or ""
+	# ------------------------------------------------------------
+	# Helpers
+	# ------------------------------------------------------------
 
-		# 1) Jeśli oryginalny blok dalej siedzi w preview 1:1, bierz go bez kombinowania
-		original = (block.get("text", "") or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-		if original and original in preview_text:
-			return original
+	def _dbg(self, msg: str, debug=False):
+		if debug:
+			print(f"[DrawIndexedPage] {msg}")
 
-		lines = preview_text.split("\n")
+	def _mark_raw_dirty(self):
+		try:
+			if self.raw_block_edit.document().isModified():
+				self._raw_text_dirty = True
+		except Exception as e:
+			self._dbg(f"_mark_raw_dirty failed: {e!r}")
 
-		# 2) Szukaj drawindexed z aktualnego bloku
-		draw = (block.get("draw", "") or "").strip()
-		draw_norm = re.sub(r"\s+", " ", draw).lower()
+	def _block_key(self, header_key, block):
+		if isinstance(header_key, list):
+			header_key = tuple(header_key)
+		san = block.get("san") or self._sanitize_fallback(
+			block.get("comment", "") or block.get("draw", "")
+		)
+		vidx = int(block.get("variant_index", 0))
+		return (header_key, san, vidx)
 
-		def line_is_draw_match(line: str) -> bool:
-			s = re.sub(r"\s+", " ", (line or "").strip()).lower()
-			if not s.startswith("drawindexed"):
-				return False
-			# akceptuj zarówno samą wartość, jak i pełną linię
-			if draw_norm:
-				return draw_norm in s
-			return True
+	def _selected_block_key(self):
+		header_key, block = self._selected_header_and_block()
+		if not block:
+			return None
+		return self._block_key(header_key, block)
 
-		# 3) Jeśli jest komentarz, to użyj go jako dodatkowego haka
-		comment = (block.get("comment", "") or "").strip().lower()
+	def _find_block_by_key(self, key):
+		if not key:
+			return None, None
+		for header_key, blist in self.blocks_by_header.items():
+			for b in blist:
+				if self._block_key(header_key, b) == key:
+					return header_key, b
+		return None, None
 
-		best_start = None
-		best_end = None
+	def _norm(self, text: str) -> str:
+		return (text or "").replace("\r\n", "\n").replace("\r", "\n")
 
-		for i, line in enumerate(lines):
-			if not line_is_draw_match(line):
-				continue
+	def _new_uid(self) -> str:
+		fn = globals().get("_make_uid")
+		if callable(fn):
+			return fn()
+		return uuid.uuid4().hex[:12]
 
-			start = i
+	def _sanitize_fallback(self, s: str) -> str:
+		s = (s or "").strip()
+		s = re.sub(r"\(.+?\)", "", s)
+		s = re.sub(r"[^A-Za-z0-9]", "", s)
+		return s.lower()
 
-			# jeśli bezpośrednio nad draw jest komentarz, weź go też
-			if start > 0 and lines[start - 1].strip().startswith(";"):
-				start -= 1
+	def _get_condition_text(self) -> str:
+		if hasattr(self.condition_edit, "toPlainText"):
+			return self.condition_edit.toPlainText()
+		if hasattr(self.condition_edit, "text"):
+			return self.condition_edit.text()
+		return ""
 
-			# spróbuj złapać otaczający IF tylko jeśli faktycznie jest częścią tego fragmentu
-			j = start - 1
-			while j >= 0:
-				s = lines[j].strip().lower()
+	def _set_condition_text(self, text: str):
+		if hasattr(self.condition_edit, "setPlainText"):
+			self.condition_edit.setPlainText(text)
+		elif hasattr(self.condition_edit, "setText"):
+			self.condition_edit.setText(text)
 
-				if re.fullmatch(r"\[[^\]]+\]", lines[j].strip()):
-					break
-				if s.startswith("if "):
-					start = j
-					break
-				if s == "endif":
-					break
-				if s.startswith(";") and comment and comment not in s:
-					break
-				if s.startswith("drawindexed"):
-					break
+	def _split_outer_if_block(self, text: str):
+		raw = self._norm(text).strip("\n")
+		lines = raw.split("\n")
 
-				j -= 1
+		if len(lines) < 3:
+			return False, "", text or ""
 
-			end = i + 1
+		first = lines[0].strip()
+		last = lines[-1].strip().lower()
 
-			# jeśli zaczęliśmy od IF, to domknij go do matching endif
-			if lines[start].strip().lower().startswith("if "):
-				depth = 0
-				for k in range(start, len(lines)):
-					s = lines[k].strip().lower()
-					if s.startswith("if "):
-						depth += 1
-					elif s == "endif":
-						depth -= 1
-						if depth == 0:
-							end = k + 1
-							break
+		if not first.lower().startswith("if ") or last != "endif":
+			return False, "", text or ""
 
-			best_start = start
-			best_end = end
-			break
+		cond = first[3:].strip()
+		body = "\n".join(lines[1:-1]).strip("\n")
+		return True, cond, body
 
-		if best_start is not None:
-			return "\n".join(lines[best_start:best_end]).strip("\n")
+	def _apply_condition_to_raw_text(self, raw_text: str, cond: str) -> str:
+		raw_text = self._norm(raw_text).strip("\n")
+		cond = (cond or "").strip()
 
-		# 4) Fallback: zwróć sam preview, ale to już ostatnia deska ratunku
-		return preview_text
+		is_if, old_cond, body = self._split_outer_if_block(raw_text)
 
-	def _extract_neighboring_lines(self, text: str, start: int, end: int, pad: int = 10) -> str:
-		text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
-		if not text:
-			return ""
+		if cond:
+			if not cond.startswith("$"):
+				cond = "$" + cond
+			if is_if:
+				return f"if {cond}\n{body}\nendif"
+			return f"if {cond}\n{raw_text}\nendif"
 
+		return body if is_if else raw_text
+
+	def _strip_outer_if(self, text: str) -> str:
+		text = self._norm(text).strip("\n")
 		lines = text.split("\n")
 
-		# mapowanie char offset -> indeks linii
-		line_starts = []
-		pos = 0
-		for line in lines:
-			line_starts.append(pos)
-			pos += len(line) + 1
+		if len(lines) >= 3 and lines[0].strip().lower().startswith("if ") and lines[-1].strip().lower() == "endif":
+			return "\n".join(lines[1:-1]).strip("\n")
 
-		def char_to_line_index(char_pos: int) -> int:
-			if char_pos <= 0:
-				return 0
-			lo, hi = 0, len(line_starts) - 1
-			while lo <= hi:
-				mid = (lo + hi) // 2
-				if line_starts[mid] <= char_pos:
-					lo = mid + 1
-				else:
-					hi = mid - 1
-			return max(0, min(hi, len(lines) - 1))
+		return text
 
-		def is_boundary_line(line: str) -> bool:
-			s = (line or "").strip()
-			if not s:
-				return False
-
-			ls = s.lower()
-
-			# nowa sekcja
-			if re.fullmatch(r"\[[^\]]+\]", s):
-				return True
-
-			# nowy blok logiczny
-			if ls.startswith("if "):
-				return True
-
-			if ls.startswith("else "):
-				return True
-
-			if ls.startswith("elif "):
-				return True
-
-			if ls.startswith("endif"):
-				return True
-
-			# nowy blok DrawIndexed / komentarz
-			if s.startswith(";"):
-				return True
-
-			if ls.startswith("drawindexed"):
-				return True
-
-			return False
-
-		start_line = char_to_line_index(start)
-		end_line = char_to_line_index(max(start, end - 1))
-
-		left = max(0, start_line - pad)
-		right = min(len(lines), end_line + pad + 1)
-
-		# utnij z lewej na pierwszym obcym bloku
-		for i in range(start_line - 1, left - 1, -1):
-			if is_boundary_line(lines[i]):
-				left = i + 1
-				break
-
-		# utnij z prawej na pierwszym obcym bloku
-		for i in range(end_line + 1, right):
-			if is_boundary_line(lines[i]):
-				right = i
-				break
-
-		window = lines[left:right]
-
-		# usuń puste brzegi
-		while window and not window[0].strip():
-			window.pop(0)
-		while window and not window[-1].strip():
-			window.pop()
-
-		if not window:
-			window = lines[start_line:end_line + 1]
-
-		return "\n".join(window).rstrip("\n")
+	def _normalize_block_text(self, text: str) -> str:
+		text = self._norm(text).rstrip("\n")
+		if not text:
+			return ""
+		return text + "\n\n"
 
 	def _normalize_cond_key(self, cond: str) -> str:
 		cond = (cond or "").strip()
@@ -7076,10 +6682,6 @@ class DrawIndexedPage(QWidget):
 		return re.sub(r"\s+", " ", cond).lower()
 
 	def _find_outer_if_block(self, lines, preferred_cond: str = ""):
-		"""
-        Zwraca (if_start, endif_end, normalized_cond) dla pierwszego pasującego IF.
-        Najpierw próbuje znaleźć IF z condition_edit, potem bierze pierwszy IF w tekście.
-        """
 		preferred = self._normalize_cond_key(preferred_cond)
 
 		def scan(match_preferred_first: bool):
@@ -7106,12 +6708,7 @@ class DrawIndexedPage(QWidget):
 		return scan(True) or scan(False)
 
 	def _find_selected_line_range(self, lines, selected_text: str):
-		"""
-        Próbuje znaleźć zaznaczony tekst jako zakres linii w całym buforze.
-        Zwraca (start, end, selected_lines) albo None.
-        """
-		selected_text = (selected_text or "").replace("\r\n", "\n").replace("\r", "\n").replace("\u2029", "\n")
-		selected_text = selected_text.strip("\n")
+		selected_text = self._norm(selected_text).replace("\u2029", "\n").strip("\n")
 		if not selected_text:
 			return None
 
@@ -7141,164 +6738,452 @@ class DrawIndexedPage(QWidget):
 
 		return None
 
-	def wrap_selected_with_if(self):
-		import textwrap
-
-		text = self.raw_block_edit.toPlainText().replace("\r\n", "\n").replace("\r", "\n")
-		cur = self.raw_block_edit.textCursor()
-
-		# Bez zaznaczenia: zachowaj stare zachowanie jako fallback
-		if not cur.hasSelection():
-			raw = text.strip("\n")
-			if not raw:
-				return
-			self.raw_block_edit.setPlainText(
-				self._apply_condition_to_raw_text(raw, self.condition_edit.toPlainText())
-			)
-			return
-
-		selected = cur.selectedText().replace("\u2029", "\n").strip("\n")
-		if not selected:
-			return
+	def _extract_neighboring_lines(self, text: str, start: int, end: int, pad: int = 10) -> str:
+		text = self._norm(text)
+		if not text:
+			return ""
 
 		lines = text.split("\n")
-		sel_info = self._find_selected_line_range(lines, selected)
 
-		# Jeśli nie umiemy znaleźć zaznaczenia jako linii, zrób fallback
-		if not sel_info:
-			wrapped = self._apply_condition_to_raw_text(selected, self.condition_edit.toPlainText())
-			cur.beginEditBlock()
-			cur.insertText(wrapped)
-			cur.endEditBlock()
-			return
+		line_starts = []
+		pos = 0
+		for line in lines:
+			line_starts.append(pos)
+			pos += len(line) + 1
 
-		sel_start, sel_end, sel_lines = sel_info
+		def char_to_line_index(char_pos: int) -> int:
+			if char_pos <= 0:
+				return 0
+			lo, hi = 0, len(line_starts) - 1
+			while lo <= hi:
+				mid = (lo + hi) // 2
+				if line_starts[mid] <= char_pos:
+					lo = mid + 1
+				else:
+					hi = mid - 1
+			return max(0, min(hi, len(lines) - 1))
 
-		# Szukamy istniejącego IF, do którego mamy wpiąć zaznaczenie
-		outer = self._find_outer_if_block(lines, self.condition_edit.toPlainText())
+		def is_boundary_line(line: str) -> bool:
+			s = (line or "").strip()
+			if not s:
+				return False
 
-		# Jeśli nie ma IF-a, wracamy do zwykłego wrapa
-		if not outer:
-			wrapped = self._apply_condition_to_raw_text(selected, self.condition_edit.toPlainText())
-			cur.beginEditBlock()
-			cur.insertText(wrapped)
-			cur.endEditBlock()
-			return
+			ls = s.lower()
+			if re.fullmatch(r"\[[^\]]+\]", s):
+				return True
+			if ls.startswith("if "):
+				return True
+			if ls.startswith("else "):
+				return True
+			if ls.startswith("elif "):
+				return True
+			if ls == "endif":
+				return True
+			if s.startswith(";"):
+				return True
+			if ls.startswith("drawindexed"):
+				return True
 
-		if_start, if_end, _ = outer
+			return False
 
-		# Jeśli zaznaczenie już jest wewnątrz tego IF-a, nic nie rób
-		if if_start < sel_start and sel_end < if_end:
-			return
+		start_line = char_to_line_index(start)
+		end_line = char_to_line_index(max(start, end - 1))
 
-		# Wcięcie bierzemy z pierwszej niepustej linii body
-		body_indent = ""
-		for i in range(if_start + 1, if_end):
-			if lines[i].strip():
-				body_indent = re.match(r"\s*", lines[i]).group(0)
+		left = max(0, start_line - pad)
+		right = min(len(lines), end_line + pad + 1)
+
+		for i in range(start_line - 1, left - 1, -1):
+			if is_boundary_line(lines[i]):
+				left = i + 1
 				break
-		if not body_indent:
-			body_indent = "\t"
 
-		# Dedent zaznaczenia, potem wklej z wcięciem body
-		moved_block = textwrap.dedent("\n".join(sel_lines)).strip("\n")
-		moved_lines = moved_block.split("\n")
-		moved_lines = [
-			(body_indent + ln if ln.strip() else "")
-			for ln in moved_lines
-		]
+		for i in range(end_line + 1, right):
+			if is_boundary_line(lines[i]):
+				right = i
+				break
 
-		new_lines = lines[:]
+		window = lines[left:right]
 
-		# Usuwamy zaznaczenie od końca
-		for i in range(sel_end - 1, sel_start - 1, -1):
-			del new_lines[i]
+		while window and not window[0].strip():
+			window.pop(0)
+		while window and not window[-1].strip():
+			window.pop()
 
-		# Jeśli zaznaczenie było przed IF-em, indeks IF-a się przesuwa
-		removed_before = (sel_end - sel_start) if sel_end <= if_start else 0
-		new_if_start = if_start - removed_before
+		if not window:
+			window = lines[start_line:end_line + 1]
 
-		insert_at = new_if_start + 1
+		return "\n".join(window).rstrip("\n")
 
-		# Wstawiamy zaznaczony blok na początek body IF-a, przed komentarzem / drawindexed
-		insertion = moved_lines + [""]
-		new_lines[insert_at:insert_at] = insertion
+	def _extract_core_block_from_preview(self, preview_text: str, block: dict) -> str:
+		preview_text = self._norm(preview_text).strip("\n")
+		if not preview_text.strip():
+			return block.get("text", "") or ""
 
-		self.raw_block_edit.setPlainText("\n".join(new_lines).rstrip("\n"))
+		original = self._norm(block.get("text", "") or "").strip("\n")
+		if original and original in preview_text:
+			return original
 
-	def _split_outer_if_block(self, text: str):
-		"""
-        Zwraca:
-          (is_if_block, condition, body)
-        Obsługuje prosty blok:
-          if ...
-              ...
-          endif
-        """
-		raw = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-		lines = raw.split("\n")
+		lines = preview_text.split("\n")
+		draw = (block.get("draw", "") or "").strip()
+		draw_norm = re.sub(r"\s+", " ", draw).lower()
+		comment = (block.get("comment", "") or "").strip().lower()
 
-		if len(lines) < 3:
-			return False, "", text or ""
+		def line_is_draw_match(line: str) -> bool:
+			s = re.sub(r"\s+", " ", (line or "").strip()).lower()
+			if not s.startswith("drawindexed"):
+				return False
+			if draw_norm:
+				return draw_norm in s
+			return True
 
-		first = lines[0].strip()
-		last = lines[-1].strip().lower()
+		for i, line in enumerate(lines):
+			if not line_is_draw_match(line):
+				continue
 
-		if not first.lower().startswith("if ") or last != "endif":
-			return False, "", text or ""
+			start = i
 
-		cond = first[3:].strip()
-		body = "\n".join(lines[1:-1]).strip("\n")
-		return True, cond, body
+			if start > 0 and lines[start - 1].strip().startswith(";"):
+				start -= 1
 
-	def _apply_condition_to_raw_text(self, raw_text: str, cond: str) -> str:
-		"""
-        Jedno miejsce prawdy:
-          - jeśli cond istnieje -> if/wstaw albo podmień istniejący if
-          - jeśli cond puste -> usuń if, jeśli był
-        """
-		raw_text = (raw_text or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-		cond = (cond or "").strip()
+			j = start - 1
+			while j >= 0:
+				s = lines[j].strip().lower()
 
-		is_if, old_cond, body = self._split_outer_if_block(raw_text)
+				if re.fullmatch(r"\[[^\]]+\]", lines[j].strip()):
+					break
+				if s.startswith("if "):
+					start = j
+					break
+				if s == "endif":
+					break
+				if s.startswith(";") and comment and comment not in s:
+					break
+				if s.startswith("drawindexed"):
+					break
 
-		if cond:
-			if not cond.startswith("$"):
-				cond = "$" + cond
-			if is_if:
-				return f"if {cond}\n{body}\nendif"
-			return f"if {cond}\n{raw_text}\nendif"
+				j -= 1
 
-		# brak cond -> unwrap, jeśli blok był if-em
-		return body if is_if else raw_text
+			end = i + 1
 
-	def _strip_outer_if(self, text: str) -> str:
-		text = (text or "").replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-		lines = text.split("\n")
+			if lines[start].strip().lower().startswith("if "):
+				depth = 0
+				for k in range(start, len(lines)):
+					s = lines[k].strip().lower()
+					if s.startswith("if "):
+						depth += 1
+					elif s == "endif":
+						depth -= 1
+						if depth == 0:
+							end = k + 1
+							break
 
-		if len(lines) >= 3 and lines[0].strip().lower().startswith("if ") and lines[-1].strip().lower() == "endif":
-			return "\n".join(lines[1:-1]).strip("\n")
+			return "\n".join(lines[start:end]).strip("\n")
 
-		return text
+		return preview_text
+
+	# ------------------------------------------------------------
+	# saved_edits helpers
+	# ------------------------------------------------------------
+
+	def _get_header_edits(self, header_name, san):
+		if not self.filename:
+			return {}
+
+		return self.saved_edits \
+			.get(self.filename, {}) \
+			.get(header_name, {}) \
+			.get(san, {})
+
+	def _ensure_header_slot(self, header_name, san):
+		self.saved_edits.setdefault(self.filename, {})
+		self.saved_edits[self.filename].setdefault(header_name, {})
+		self.saved_edits[self.filename][header_name].setdefault(san, {})
+		return self.saved_edits[self.filename][header_name][san]
+
+	def _find_block_by_uid(self, uid):
+		if not uid:
+			return None, None
+		for header_key, blist in self.blocks_by_header.items():
+			for block in blist:
+				if block.get("uid") == uid:
+					return header_key, block
+		return None, None
+
+	def _selected_header_and_block(self):
+		item = self.block_list.currentItem()
+		if not item:
+			return None, None
+		header_key, block = item.data(Qt.UserRole)
+		if isinstance(header_key, list):
+			header_key = tuple(header_key)
+		return header_key, block
+
+	def _selected_block_uid(self):
+		header_key, block = self._selected_header_and_block()
+		if not block:
+			return None
+		return block.get("uid")
+
+	def _set_current_item_by_uid(self, uid):
+		if not uid:
+			return
+		for i in range(self.block_list.count()):
+			it = self.block_list.item(i)
+			if not it:
+				continue
+			header_key, block = it.data(Qt.UserRole)
+			if block and block.get("uid") == uid:
+				self.block_list.setCurrentRow(i)
+				return
+
+	# ------------------------------------------------------------
+	# UI list handling
+	# ------------------------------------------------------------
+
+	def _label_for_block(self, b, header_key):
+		name, kind = header_key
+		san = b.get("san") or self._sanitize_fallback(b.get("comment", "") or b.get("draw", "") or "")
+		vidx = b.get("variant_index", 0)
+
+		header_edits = self._get_header_edits(name, san)
+		edited = vidx in header_edits
+
+		if edited:
+			ed = header_edits[vidx]
+			comment = ed.get("comment", b.get("comment", ""))
+			draw = ed.get("draw", b.get("draw", ""))
+			cond = ed.get("condition", b.get("condition", ""))
+		else:
+			comment = b.get("comment", "")
+			draw = b.get("draw", "")
+			cond = b.get("condition", "")
+
+		flag = "* " if edited else ""
+		cond_part = f"if {cond} | " if cond else ""
+
+		if len(comment) > 25:
+			comment = comment[:22] + "..."
+
+		return f"{flag}{cond_part}{comment} -> {draw} | {san}[{vidx}]"
+
+	def update_block_list(self, idx):
+		self.block_list.clear()
+		if idx < 0 or idx >= len(self.header_keys):
+			return
+		header_key = self.header_keys[idx]
+		self.populate_and_reapply(header_key)
+
+	def populate_and_reapply(self, header_key, preserve_key=None):
+		if isinstance(header_key, list):
+			header_key = tuple(header_key)
+
+		if preserve_key is None:
+			preserve_key = self._selected_block_key()
+
+		self._dbg(f"populate_and_reapply header_key={header_key}, preserve_key={preserve_key}")
+
+		self.block_list.blockSignals(True)
+		self.block_list.clear()
+
+		blist = self.blocks_by_header.get(header_key, [])
+
+		for b in blist:
+			label = self._label_for_block(b, header_key)
+			it = QListWidgetItem(label)
+			it.setData(Qt.UserRole, (header_key, b))
+			self.block_list.addItem(it)
+
+		if blist:
+			if preserve_key:
+				for i, b in enumerate(blist):
+					if self._block_key(header_key, b) == preserve_key:
+						self.block_list.setCurrentRow(i)
+						break
+				else:
+					self.block_list.setCurrentRow(0)
+			else:
+				self.block_list.setCurrentRow(0)
+
+		self.block_list.blockSignals(False)
+
+		if self.block_list.currentRow() >= 0:
+			self.load_block_fields(self.block_list.currentRow())
+
+	def refresh_from_ini(self, new_ini_text: str):
+		current_header_data = None
+		current_key = self._selected_block_key()
+
+		self._dbg(f"refresh_from_ini called, new_ini_len={len(new_ini_text or '')}, current_key={current_key}")
+
+		cur_row = self.header_list.currentRow()
+		if 0 <= cur_row < self.header_list.count():
+			it = self.header_list.item(cur_row)
+			if it:
+				current_header_data = it.data(Qt.UserRole)
+
+		self.ini_text = new_ini_text or ""
+		self.blocks_by_header = find_drawindexed_blocks(self.ini_text)
+		self.header_keys = sorted(self.blocks_by_header.keys(), key=lambda x: (x[0] != "<GLOBAL>", x[0].lower()))
+
+		self.header_list.blockSignals(True)
+		self.header_list.clear()
+
+		for name, kind in self.header_keys:
+			label = f"{name}" if name != "<GLOBAL>" else "<GLOBAL>"
+			it = QListWidgetItem(label)
+			it.setData(Qt.UserRole, (name, kind))
+			self.header_list.addItem(it)
+
+		target_row = -1
+		if current_header_data:
+			for i in range(self.header_list.count()):
+				if self.header_list.item(i).data(Qt.UserRole) == current_header_data:
+					target_row = i
+					break
+
+		if target_row < 0 and self.header_keys:
+			target_row = 0
+
+		if target_row >= 0:
+			self.header_list.setCurrentRow(target_row)
+
+		self.header_list.blockSignals(False)
+
+		sel = self.header_list.currentRow()
+		if sel >= 0:
+			key = self.header_list.item(sel).data(Qt.UserRole)
+			self.populate_and_reapply(key, preserve_key=current_key)
+
+	# ------------------------------------------------------------
+	# field load/save
+	# ------------------------------------------------------------
+
+	def load_block_fields(self, idx):
+		self._dbg(f"load_block_fields idx={idx}")
+
+		if idx < 0:
+			self._current_block_key = None
+			self.comment_edit.clear()
+			self.draw_edit.clear()
+			self._set_condition_text("")
+			self.raw_block_edit.clear()
+			self._raw_text_loaded = ""
+			self._raw_text_dirty = False
+			return
+
+		item = self.block_list.item(idx)
+		if not item:
+			return
+
+		header_key, block = item.data(Qt.UserRole)
+		if isinstance(header_key, list):
+			header_key = tuple(header_key)
+
+		name, kind = header_key
+		san = block.get("san") or self._sanitize_fallback(block.get("comment", "") or block.get("draw", ""))
+		vidx = block.get("variant_index", 0)
+
+		self._current_block_key = self._block_key(header_key, block)
+
+		header_edits = self._get_header_edits(name, san)
+		ed = header_edits.get(vidx, {})
+
+		raw_draw = (ed.get("draw", block.get("draw", "")) or "").strip()
+		if raw_draw.lower().startswith("drawindexed"):
+			raw_draw = raw_draw.split("=", 1)[1].strip()
+
+		comment_val = ed.get("comment", block.get("comment", ""))
+		cond_val = ed.get("condition", block.get("condition", ""))
+
+		self._dbg(
+			f"load_block_fields: header={header_key}, san={san}, vidx={vidx}, "
+			f"comment={comment_val!r}, draw={raw_draw!r}, cond={cond_val!r}"
+		)
+
+		self.comment_edit.setText(comment_val)
+		self.draw_edit.setText(raw_draw)
+		self._set_condition_text(cond_val)
+
+		raw_text = ed.get("raw_text", "") or ""
+		if not raw_text.strip():
+			raw_text = self._extract_neighboring_lines(
+				self.ini_text,
+				block.get("start", 0),
+				block.get("end", 0),
+				pad=10
+			)
+
+		self._raw_text_loaded = raw_text.rstrip("\n")
+		self._raw_text_dirty = False
+
+		self.raw_block_edit.blockSignals(True)
+		self.raw_block_edit.setPlainText(self._raw_text_loaded)
+		self.raw_block_edit.document().setModified(False)
+		self.raw_block_edit.blockSignals(False)
+
+	def save_changes_local(self):
+		item = self.block_list.currentItem()
+		if not item:
+			self._dbg("save_changes_local: no current item")
+			return
+
+		header_key, block = item.data(Qt.UserRole)
+		if isinstance(header_key, list):
+			header_key = tuple(header_key)
+
+		name, kind = header_key
+		san = block.get("san") or self._sanitize_fallback(block.get("comment", "") or block.get("draw", ""))
+		vidx = block.get("variant_index", 0)
+
+		raw_draw = self.draw_edit.text().strip()
+		if raw_draw.lower().startswith("drawindexed"):
+			raw_draw = raw_draw.split("=", 1)[1].strip()
+
+		raw_text = self.raw_block_edit.toPlainText()
+		raw_text = self._norm(raw_text)  # tylko CRLF -> LF, bez strip()
+		cond = self._get_condition_text().strip()
+
+		original_raw = self._extract_neighboring_lines(
+			self.ini_text,
+			block.get("start", 0),
+			block.get("end", 0),
+			pad = 10
+		)
+
+		use_raw = self._raw_text_dirty or (raw_text != self._raw_text_loaded and raw_text != original_raw)
+
+		self._dbg(
+			f"save_changes_local: header={header_key}, san={san}, vidx={vidx}, "
+			f"cond={cond!r}, draw={raw_draw!r}, raw_dirty={self._raw_text_dirty}, use_raw={use_raw}"
+		)
+
+		slot = self._ensure_header_slot(name, san)
+		slot[vidx] = {
+			"comment": self.comment_edit.text().strip(),
+			"draw": raw_draw,
+			"condition": cond,
+			"raw_text": raw_text if use_raw else ""
+		}
+
+		self._raw_text_loaded = raw_text
+		self._raw_text_dirty = False
+
+		item.setText(self._label_for_block(block, header_key))
+
+	# ------------------------------------------------------------
+	# build/apply
+	# ------------------------------------------------------------
 
 	def _build_effective_block(self, block, ed=None):
-		"""
-        Buduje finalny tekst bloku:
-          1) raw_text jest tylko podglądem / oknem
-          2) z raw_text wyciągamy właściwy blok
-          3) condition działa tylko raz
-          4) gdy raw_text puste, składamy blok z comment/draw/condition
-        """
 		ed = ed or {}
 
 		comment = (ed.get("comment", block.get("comment", "")) or "").strip()
 		draw = (ed.get("draw", block.get("draw", "")) or "").strip()
 		cond = (ed.get("condition", block.get("condition", "")) or "").strip()
-		raw_text = (ed.get("raw_text", "") or "").strip("\n")
+		raw_text = self._norm(ed.get("raw_text", "") or "")
 
 		if raw_text.strip():
-			core = self._extract_core_block_from_preview(raw_text, block)
-			core = self._strip_outer_if(core).strip("\n")
+			core = self._strip_outer_if(raw_text).rstrip("\n")
 			return self._normalize_block_text(self._apply_condition_to_raw_text(core, cond))
 
 		if cond and not cond.startswith("$"):
@@ -7318,512 +7203,26 @@ class DrawIndexedPage(QWidget):
 
 		return self._normalize_block_text("\n".join(lines))
 
-	def _normalize_block_text(self, text: str) -> str:
-		text = (text or "").replace("\r\n", "\n").replace("\r", "\n").rstrip("\n")
-		if not text:
-			return ""
-		return text + "\n\n"
-
-	def _get_block_and_edit(self, idx=None):
-		if idx is None:
-			idx = self.block_list.currentRow()
-		if idx < 0:
-			return None, None, None, None, None
-
-		it = self.block_list.item(idx)
-		if not it:
-			return None, None, None, None, None
-
-		header_key, block = it.data(Qt.UserRole)
-		if isinstance(header_key, list):
-			header_key = tuple(header_key)
-
-		name, kind = header_key
-		san = block.get("san")
-		vidx = block.get("variant_index", 0)
-		header_edits = self._get_header_edits(name, san)
-		ed = header_edits.get(vidx, {})
-		return header_key, block, ed, san, vidx
-
-	def _compose_fallback_block(self, block, ed):
-		comment = (ed.get("comment", block.get("comment", "")) if ed else block.get("comment", ""))
-		draw = (ed.get("draw", block.get("draw", "")) if ed else block.get("draw", ""))
-		cond = (ed.get("condition", block.get("condition", "")) if ed else block.get("condition", ""))
-
-		comment = (comment or "").strip()
-		draw = (draw or "").strip()
-		cond = (cond or "").strip()
-
-		if draw.lower().startswith("drawindexed"):
-			draw = draw.split("=", 1)[1].strip()
-
-		lines = []
-		if cond:
-			if not cond.lower().startswith("$"):
-				cond = "$" + cond
-			lines.append(f"if {cond}")
-			if comment:
-				lines.append(f"    ; {comment}")
-			lines.append(f"    drawindexed = {draw}")
-			lines.append("endif")
-		else:
-			if comment:
-				lines.append(f"; {comment}")
-			lines.append(f"drawindexed = {draw}")
-
-		return self._normalize_block_text("\n".join(lines))
-
-	def _load_raw_from_selected(self):
-		idx = self.block_list.currentRow()
-		if idx < 0:
-			return
-
-		_, block, ed, _, _ = self._get_block_and_edit(idx)
-		if block is None:
-			return
-
-		raw_text = (ed.get("raw_text", "") if ed else "").strip("\n")
-		if not raw_text:
-			raw_text = block.get("text", "")
-
-		self.raw_block_edit.setPlainText(raw_text)
-		self.preview_edit.setPlainText(
-			self._compose_fallback_block(block, ed) if not raw_text.strip() else self._normalize_block_text(raw_text))
-
-	def _wrap_selection_with_if(self):
-		cur = self.raw_block_edit.textCursor()
-
-		if cur.hasSelection():
-			selected = cur.selectedText().replace("\u2029", "\n")
-		else:
-			selected = self.raw_block_edit.toPlainText()
-
-		selected = selected.strip("\n")
-		if not selected:
-			return
-
-		cond = self.condition_edit.toPlainText().strip() or "$Var"
-		if not cond.lower().startswith("$"):
-			cond = "$" + cond
-
-		wrapped = f"if {cond}\n{selected}\nendif"
-		cur.beginEditBlock()
-		if cur.hasSelection():
-			cur.insertText(wrapped)
-		else:
-			self.raw_block_edit.setPlainText(wrapped)
-		cur.endEditBlock()
-
-		self.preview_edit.setPlainText(self._normalize_block_text(self.raw_block_edit.toPlainText()))
-
-	def _unwrap_if_block(self):
-		text = self.raw_block_edit.toPlainText().replace("\r\n", "\n").replace("\r", "\n").strip("\n")
-		lines = text.split("\n")
-		if len(lines) >= 3 and lines[0].strip().lower().startswith("if ") and lines[-1].strip().lower().startswith(
-				"endif"):
-			text = "\n".join(lines[1:-1]).strip("\n")
-			self.raw_block_edit.setPlainText(text)
-			self.preview_edit.setPlainText(self._normalize_block_text(text))
-
-	def create_conditions_from_comments(self):
-
-		items = self.block_list.selectedItems()
-
-		if not items:
-			QMessageBox.information(self, "No selection", "No blocks selected.")
-			return
-
-		# ---------- helpers ----------
-
-		def sanitize(s):
-
-			s = s or ""
-
-			s = re.sub(r"\(.+?\)", "", s)
-
-			s = re.sub(r"[^A-Za-z0-9]", "", s)
-
-			return s.lower()
-
-		def remove_digits(s):
-
-			return re.sub(r"\d+$", "", s)
-
-		def is_autogen(cond, var):
-
-			if not cond:
-				return False
-
-			cond = cond.strip()
-
-			if cond == f"${var}":
-				return True
-
-			return bool(
-				re.fullmatch(
-					rf"\${re.escape(var)}\s*==\s*\d+",
-					cond
-				)
-			)
-
-		def autogen_index(cond, var):
-
-			cond = cond.strip()
-
-			if cond == f"${var}":
-				return 0
-
-			m = re.fullmatch(
-				rf"\${re.escape(var)}\s*==\s*(\d+)",
-				cond
-			)
-
-			if m:
-				return int(m.group(1))
-
-			return None
-
-		# ---------- group selected ----------
-
-		groups = {}
-
-		for it in items:
-			header_key, b = it.data(Qt.UserRole)
-
-			name_raw = b.get("comment") or b.get("draw") or ""
-
-			san = b.get("san") or sanitize(name_raw)
-
-			base = remove_digits(san)
-
-			key = (tuple(header_key), base)
-
-			groups.setdefault(key, []).append(b)
-
-		changed = []
-
-		# ---------- process groups ----------
-
-		for (header_key, base), selected_blocks in groups.items():
-
-			header_name, header_kind = header_key
-
-			# variable name
-
-			var = re.sub(r"[^A-Za-z0-9]", "", base)
-
-			if not var:
-				var = "var"
-
-			if var[0].isdigit():
-				var = "x" + var
-
-			var = var.capitalize()
-
-			# ---------- find ALL blocks in header ----------
-
-			all_blocks = []
-
-			for b in self.blocks_by_header.get(header_key, []):
-
-				if b.get("san") == base:
-					all_blocks.append(b)
-
-			# ---------- detect existing autogen ----------
-
-			existing_indices = set()
-
-			for b in all_blocks:
-
-				san = b.get("san")
-
-				vidx = b.get("variant_index", 0)
-
-				header_edits = self._get_header_edits(header_name, san)
-
-				cond = header_edits.get(vidx, {}).get(
-					"condition",
-					b.get("condition", "")
-				)
-
-				idx = autogen_index(cond, var)
-
-				if idx is not None:
-					existing_indices.add(idx)
-
-			# ---------- assign ----------
-
-			for b in selected_blocks:
-
-				san = b.get("san")
-
-				vidx = b.get("variant_index", 0)
-
-				slot = self._ensure_header_slot(header_name, san)
-
-				existing_draw = slot.get(
-					vidx,
-					{}
-				).get(
-					"draw",
-					b.get("draw", "")
-				)
-
-				existing_comment = slot.get(
-					vidx,
-					{}
-				).get(
-					"comment",
-					b.get("comment", "")
-				)
-
-				# current condition
-
-				current_cond = slot.get(
-					vidx,
-					{}
-				).get(
-					"condition",
-					b.get("condition", "")
-				)
-
-				# don't overwrite manual
-
-				if current_cond and not is_autogen(current_cond, var):
-					continue
-
-				# next index
-
-				if not existing_indices:
-
-					cond = f"${var}"
-
-					existing_indices.add(0)
-
-				else:
-
-					next_i = max(existing_indices) + 1
-
-					cond = f"${var} == {next_i}"
-
-					existing_indices.add(next_i)
-
-				slot[vidx] = {
-
-					"comment": existing_comment,
-
-					"draw": existing_draw,
-
-					"condition": cond
-
-				}
-
-				changed.append(
-					(header_key, san, vidx)
-				)
-
-			# ------------------------
-			# Normalize bare "$Var" to "$Var == 0" when there are multiple autogen indices
-			# (this fixes the case: first got "if $Bow", second got "if $Bow == 1" but first
-			#  wasn't updated to "if $Bow == 0")
-			# ------------------------
-
-			# ensure we operate on the actual saved slot dict
-			slot = self._ensure_header_slot(header_name, base)
-
-			# collect autogen entries: index -> (vidx, cond)
-			auto_entries = {}
-
-			# include blocks known from file
-			for b2 in all_blocks:
-				vid = b2.get("variant_index", 0)
-				cond = slot.get(vid, {}).get("condition", b2.get("condition", ""))
-				idx = autogen_index(cond, var)
-				if idx is not None:
-					auto_entries[idx] = (vid, cond)
-
-			# also include any entries only present in saved edits (slot)
-			for vid, val in list(slot.items()):
-				cond = val.get("condition", "")
-				idx = autogen_index(cond, var)
-				if idx is not None:
-					auto_entries[idx] = (vid, cond)
-
-			# if more than one autogen index exists, convert bare "$Var" -> "$Var == 0"
-			if len(auto_entries) > 1 and 0 in auto_entries:
-				vid0, cond0 = auto_entries[0]
-				if cond0.strip() == f"${var}":
-					slot.setdefault(vid0, {})
-					slot[vid0]['condition'] = f"${var} == 0"
-
-		# ---------- refresh ----------
-
-		cur_row = self.header_list.currentRow()
-
-		if 0 <= cur_row < self.header_list.count():
-			key = self.header_list.item(cur_row).data(Qt.UserRole)
-
-			self.populate_and_reapply(key)
-
-		editor.statusBar().showMessage(f"Updated {len(changed)} If Block(s).", 3000)
-		# QMessageBox.information(
-
-	#
-	#    self,
-	#
-	#    "Conditions created",
-	#
-	#    f"Updated {len(changed)} block(s)."
-	#
-	# )
-
-	# --- helpers for saved_edits ---
-
-	def _get_header_edits(self, header_name, san):
-		if not self.filename:
-			return {}
-
-		return self.saved_edits \
-			.get(self.filename, {}) \
-			.get(header_name, {}) \
-			.get(san, {})
-
-	def _ensure_header_slot(self, header_name, san):
-		self.saved_edits.setdefault(self.filename, {})
-		self.saved_edits[self.filename].setdefault(header_name, {})
-		self.saved_edits[self.filename][header_name].setdefault(san, {})
-		return self.saved_edits[self.filename][header_name][san]
-
-	# --- UI helpers ---
-
-	def update_block_list(self, idx):
-		self.block_list.clear()
-		if idx < 0 or idx >= len(self.header_keys):
-			return
-		header_key = self.header_keys[idx]
-		self.populate_and_reapply(header_key)
-
-	def _label_for_block(self, b, header_key):
-		name, kind = header_key
-		san = b.get("san", "unknown")
-		vidx = b.get("variant_index", 0)
-
-		header_edits = self._get_header_edits(name, san)
-
-		edited = vidx in header_edits
-		if edited:
-			ed = header_edits[vidx]
-			comment = ed.get("comment", b.get("comment", ""))
-			draw = ed.get("draw", b.get("draw", ""))
-			cond = ed.get("condition", b.get("condition", ""))
-		else:
-			comment = b.get("comment", "")
-			draw = b.get("draw", "")
-			cond = b.get("condition", "")
-
-		flag = "* " if edited else ""
-		if_flag = "if " if cond else ""
-
-		# skróć komentarz żeby nie rozjeżdżał listy
-		if len(comment) > 25:
-			comment = comment[:22] + "..."
-
-		return f"{flag}{if_flag}{cond + ' | ' if cond else ''}{comment} -> {draw} | {san}[{vidx}]"
-
-	def load_block_fields(self, idx):
-		if idx < 0:
-			self.comment_edit.clear()
-			self.draw_edit.clear()
-			self.condition_edit.clear()
-			self.raw_block_edit.clear()
-			return
-
-		item = self.block_list.item(idx)
-		header_key, block = item.data(Qt.UserRole)
-
-		name, kind = header_key
-		san = block.get("san")
-		vidx = block.get("variant_index", 0)
-
-		header_edits = self._get_header_edits(name, san)
-		ed = header_edits.get(vidx, {})
-
-		raw_draw = (ed.get("draw", block.get("draw", "")) or "").strip()
-		if raw_draw.lower().startswith("drawindexed"):
-			raw_draw = raw_draw.split("=", 1)[1].strip()
-
-		self.comment_edit.setText(ed.get("comment", block.get("comment", "")))
-		self.draw_edit.setText(raw_draw)
-
-		# condition bierze się z editów albo z bloku
-		self.condition_edit.setText(ed.get("condition", block.get("condition", "")))
-
-		# raw text: jeśli było zapisane, bierzemy je; jeśli nie, używamy oryginalnego bloku
-		raw_text = ed.get("raw_text", "") or ""
-
-		if not raw_text.strip():
-			raw_text = self._extract_neighboring_lines(
-				self.ini_text,
-				block.get("start", 0),
-				block.get("end", 0),
-				pad = 10
-			)
-
-		self.raw_block_edit.setPlainText(raw_text.rstrip("\n"))
-
-	# --- local save ---
-
-	def save_changes_local(self):
-		idx = self.block_list.currentRow()
-		if idx < 0:
-			return
-
-		it = self.block_list.item(idx)
-		header_key, block = it.data(Qt.UserRole)
-
-		name, kind = header_key
-		san = block.get("san")
-		vidx = block.get("variant_index", 0)
-
-		raw_draw = self.draw_edit.text().strip()
-		if raw_draw.lower().startswith("drawindexed"):
-			raw_draw = raw_draw.split("=", 1)[1].strip()
-
-		raw_text = self.raw_block_edit.toPlainText().strip("\n")
-		cond = self.condition_edit.toPlainText().strip()
-
-		slot = self._ensure_header_slot(name, san)
-		slot[vidx] = {
-			"comment": self.comment_edit.text().strip(),
-			"draw": raw_draw,
-			"condition": cond,
-			"raw_text": raw_text
-		}
-
-		it.setText(self._label_for_block(block, header_key))
-
-	# --- apply edits to parent INI ---
-
 	def apply_edits_to_parent(self):
+		self._dbg("apply_edits_to_parent called")
 		self.save_changes_local()
 
 		if not (self.parent and hasattr(self.parent, "ini_editor")):
 			QMessageBox.warning(self, "No parent", "Parent editor not available.")
 			return
 
-		if editor:
-			editor.allow_alert = False
-			editor.rebuild_ini(False)
-
 		base_text = self.parent.ini_editor.toPlainText()
 		current_blocks = find_drawindexed_blocks(base_text)
+
+		self._dbg(f"apply_edits_to_parent: base_len={len(base_text)}, blocks_headers={len(current_blocks)}")
+
 		replacements = []
 
 		for header_key, blist in current_blocks.items():
 			header_name, header_kind = header_key
 
 			for b in blist:
-				san = b.get("san")
+				san = b.get("san") or self._sanitize_fallback(b.get("comment", "") or b.get("draw", ""))
 				vidx = b.get("variant_index", 0)
 
 				header_edits = self._get_header_edits(header_name, san)
@@ -7834,80 +7233,665 @@ class DrawIndexedPage(QWidget):
 				new_text = self._build_effective_block(b, ed)
 				replacements.append((b["start"], b["end"], new_text))
 
-		replacements.sort(key = lambda x: x[0], reverse = True)
+				self._dbg(
+					f"apply_edits_to_parent: queued header={header_name!r}, san={san!r}, "
+					f"vidx={vidx}, start={b['start']}, end={b['end']}, repl_len={len(new_text)}"
+				)
+
+		replacements.sort(key=lambda x: x[0], reverse=True)
 
 		new_text = base_text
 		for s, e, repl in replacements:
 			new_text = new_text[:s] + repl + new_text[e:]
 
+		self._dbg(f"apply_edits_to_parent: replacements={len(replacements)}, final_len={len(new_text)}")
+
 		self.parent.ini_editor.setPlainText(new_text)
 		self.refresh_from_ini(new_text)
 
-	# --- refresh dialog ---
+		self._dbg("apply_edits_to_parent: done")
 
-	def refresh_from_ini(self, new_ini_text: str):
-		self.ini_text = new_ini_text
-		self.blocks_by_header = find_drawindexed_blocks(self.ini_text)
-		self.header_keys = sorted(self.blocks_by_header.keys(), key = lambda x: (x[0] != "<GLOBAL>", x[0].lower()))
+	# ------------------------------------------------------------
+	# edit operations
+	# ------------------------------------------------------------
 
-		prev_data = None
-		cur_row = self.header_list.currentRow()
-		if 0 <= cur_row < self.header_list.count():
-			prev_data = self.header_list.item(cur_row).data(Qt.UserRole)
+	def duplicate_selected(self):
+		header_key, block = self._selected_header_and_block()
+		if block is None:
+			return
 
-		self.header_list.blockSignals(True)
-		self.header_list.clear()
-
-		for name, kind in self.header_keys:
-			label = f"{name}" if name != "<GLOBAL>" else "<GLOBAL>"
-			it = QListWidgetItem(label)
-			it.setData(Qt.UserRole, (name, kind))
-			self.header_list.addItem(it)
-
-		if prev_data:
-			for i in range(self.header_list.count()):
-				if self.header_list.item(i).data(Qt.UserRole) == prev_data:
-					self.header_list.setCurrentRow(i)
-					break
-		elif self.header_keys:
-			self.header_list.setCurrentRow(0)
-
-		self.header_list.blockSignals(False)
-
-		sel = self.header_list.currentRow()
-		if sel >= 0:
-			key = self.header_list.item(sel).data(Qt.UserRole)
-			self.populate_and_reapply(key)
-
-	# --- populate block list ---
-
-	def populate_and_reapply(self, header_key):
 		if isinstance(header_key, list):
 			header_key = tuple(header_key)
 
-		self.block_list.clear()
+		name, kind = header_key
 		blist = self.blocks_by_header.get(header_key, [])
+		pos = next((i for i, b in enumerate(blist) if b.get("uid") == block.get("uid")), -1)
+		if pos < 0:
+			return
+
+		clone = copy.deepcopy(block)
+		clone["uid"] = self._new_uid()
+
+		san = block.get("san") or self._sanitize_fallback(block.get("comment", "") or block.get("draw", ""))
+		header_edits = self._get_header_edits(name, san)
+		if block.get("variant_index", 0) in header_edits:
+			self._ensure_header_slot(name, san)
+			self.saved_edits[self.filename][name][san][clone.get("variant_index", 0)] = copy.deepcopy(
+				header_edits[block["variant_index"]]
+			)
+
+		blist.insert(pos + 1, clone)
+		self._renumber_variant_indices(header_key)
+		self.populate_and_reapply(header_key, preserve_uid=clone["uid"])
+		self.block_list.setCurrentRow(pos + 1)
+
+	def move_selected_up(self):
+		header_key, block = self._selected_header_and_block()
+		if block is None:
+			return
+
+		blist = self.blocks_by_header.get(header_key, [])
+		pos = next((i for i, b in enumerate(blist) if b.get("uid") == block.get("uid")), -1)
+		if pos <= 0:
+			return
+
+		blist[pos - 1], blist[pos] = blist[pos], blist[pos - 1]
+		self._renumber_variant_indices(header_key)
+		self.populate_and_reapply(header_key, preserve_uid=block.get("uid"))
+		self.block_list.setCurrentRow(pos - 1)
+
+	def move_selected_down(self):
+		header_key, block = self._selected_header_and_block()
+		if block is None:
+			return
+
+		blist = self.blocks_by_header.get(header_key, [])
+		pos = next((i for i, b in enumerate(blist) if b.get("uid") == block.get("uid")), -1)
+		if pos < 0 or pos >= len(blist) - 1:
+			return
+
+		blist[pos + 1], blist[pos] = blist[pos], blist[pos + 1]
+		self._renumber_variant_indices(header_key)
+		self.populate_and_reapply(header_key, preserve_uid=block.get("uid"))
+		self.block_list.setCurrentRow(pos + 1)
+
+	def delete_selected(self):
+		header_key, block = self._selected_header_and_block()
+		if block is None:
+			return
+
+		if isinstance(header_key, list):
+			header_key = tuple(header_key)
+
+		blist = self.blocks_by_header.get(header_key, [])
+		pos = next((i for i, b in enumerate(blist) if b.get("uid") == block.get("uid")), -1)
+		if pos < 0:
+			return
 
 		name, kind = header_key
+		san = block.get("san") or self._sanitize_fallback(block.get("comment", "") or block.get("draw", ""))
+		vidx = block.get("variant_index", 0)
+
+		if self.filename:
+			tex_root = self.saved_edits.get(self.filename, {})
+			if name in tex_root and san in tex_root[name] and vidx in tex_root[name][san]:
+				del tex_root[name][san][vidx]
+				if not tex_root[name][san]:
+					del tex_root[name][san]
+
+		del blist[pos]
+		self._renumber_variant_indices(header_key)
+		self.populate_and_reapply(header_key)
+
+	def add_new_entry(self):
+		cur_row = self.header_list.currentRow()
+		if cur_row < 0:
+			return
+
+		header_key = self.header_keys[cur_row]
+
+		new_block = {
+			"uid": self._new_uid(),
+			"header_key": header_key,
+			"start": 0,
+			"end": 0,
+			"text": "",
+			"comment": "",
+			"draw": "",
+			"condition": "",
+			"raw_text": "",
+			"san": self._sanitize_fallback("drawindexed"),
+			"variant_index": 0,
+		}
+
+		self.blocks_by_header.setdefault(header_key, []).append(new_block)
+		self._renumber_variant_indices(header_key)
+
+		self.populate_and_reapply(header_key, preserve_uid=new_block["uid"])
+		self.block_list.setCurrentRow(self.block_list.count() - 1)
+
+	def _renumber_variant_indices(self, header_key):
+		blist = self.blocks_by_header.get(header_key, [])
+		counts = defaultdict(int)
 
 		for b in blist:
-			san = b.get("san")
-			vidx = b.get("variant_index", 0)
+			san = b.get("san") or self._sanitize_fallback(b.get("comment", "") or b.get("draw", ""))
+			b["san"] = san
+			b["variant_index"] = counts[san]
+			counts[san] += 1
 
-			header_edits = self._get_header_edits(name, san)
+	# ------------------------------------------------------------
+	# wrapping / moving IFs
+	# ------------------------------------------------------------
 
-			if vidx in header_edits:
-				ed = header_edits[vidx]
-				label = f"* {'if ' + ed.get('condition') + ' | ' if ed.get('condition', None) else ''}{ed.get('comment', '')} -> {ed.get('draw', '')} | {san}[{vidx}]"
-			else:
+	def wrap_selected_with_if(self):
+		import textwrap
+
+		text = self.raw_block_edit.toPlainText().replace("\r\n", "\n").replace("\r", "\n")
+		cur = self.raw_block_edit.textCursor()
+
+		if not cur.hasSelection():
+			raw = text.strip("\n")
+			if not raw:
+				return
+			self.raw_block_edit.setPlainText(
+				self._apply_condition_to_raw_text(raw, self._get_condition_text())
+			)
+			return
+
+		selected = cur.selectedText().replace("\u2029", "\n").strip("\n")
+		if not selected:
+			return
+
+		lines = text.split("\n")
+		sel_info = self._find_selected_line_range(lines, selected)
+
+		if not sel_info:
+			wrapped = self._apply_condition_to_raw_text(selected, self._get_condition_text())
+			cur.beginEditBlock()
+			cur.insertText(wrapped)
+			cur.endEditBlock()
+			return
+
+		sel_start, sel_end, sel_lines = sel_info
+
+		outer = self._find_outer_if_block(lines, self._get_condition_text())
+
+		if not outer:
+			wrapped = self._apply_condition_to_raw_text(selected, self._get_condition_text())
+			cur.beginEditBlock()
+			cur.insertText(wrapped)
+			cur.endEditBlock()
+			return
+
+		if_start, if_end, _ = outer
+
+		if if_start < sel_start and sel_end < if_end:
+			return
+
+		body_indent = ""
+		for i in range(if_start + 1, if_end):
+			if lines[i].strip():
+				body_indent = re.match(r"\s*", lines[i]).group(0)
+				break
+		if not body_indent:
+			body_indent = "\t"
+
+		moved_block = textwrap.dedent("\n".join(sel_lines)).strip("\n")
+		moved_lines = moved_block.split("\n")
+		moved_lines = [(body_indent + ln if ln.strip() else "") for ln in moved_lines]
+
+		new_lines = lines[:]
+
+		for i in range(sel_end - 1, sel_start - 1, -1):
+			del new_lines[i]
+
+		removed_before = (sel_end - sel_start) if sel_end <= if_start else 0
+		new_if_start = if_start - removed_before
+		insert_at = new_if_start + 1
+
+		new_lines[insert_at:insert_at] = moved_lines + [""]
+
+		self.raw_block_edit.setPlainText("\n".join(new_lines).rstrip("\n"))
+
+	# ------------------------------------------------------------
+	# auto conditions from comments
+	# ------------------------------------------------------------
+
+	def create_conditions_from_comments(self):
+		items = self.block_list.selectedItems()
+
+		if not items:
+			QMessageBox.information(self, "No selection", "No blocks selected.")
+			return
+
+		def sanitize(s):
+			s = s or ""
+			s = re.sub(r"\(.+?\)", "", s)
+			s = re.sub(r"[^A-Za-z0-9]", "", s)
+			return s.lower()
+
+		def remove_digits(s):
+			return re.sub(r"\d+$", "", s)
+
+		def is_autogen(cond, var):
+			if not cond:
+				return False
+			cond = cond.strip()
+			if cond == f"${var}":
+				return True
+			return bool(re.fullmatch(rf"\${re.escape(var)}\s*==\s*\d+", cond))
+
+		def autogen_index(cond, var):
+			cond = cond.strip()
+			if cond == f"${var}":
+				return 0
+			m = re.fullmatch(rf"\${re.escape(var)}\s*==\s*(\d+)", cond)
+			if m:
+				return int(m.group(1))
+			return None
+
+		groups = {}
+
+		for it in items:
+			header_key, b = it.data(Qt.UserRole)
+
+			name_raw = b.get("comment") or b.get("draw") or ""
+			san = b.get("san") or sanitize(name_raw)
+			base = remove_digits(san)
+
+			key = (tuple(header_key), base)
+			groups.setdefault(key, []).append(b)
+
+		changed = []
+
+		for (header_key, base), selected_blocks in groups.items():
+			header_name, header_kind = header_key
+
+			var = re.sub(r"[^A-Za-z0-9]", "", base)
+			if not var:
+				var = "var"
+			if var[0].isdigit():
+				var = "x" + var
+			var = var.capitalize()
+
+			all_blocks = []
+			for b in self.blocks_by_header.get(header_key, []):
+				if b.get("san") == base:
+					all_blocks.append(b)
+
+			existing_indices = set()
+
+			for b in all_blocks:
+				san = b.get("san")
+				vidx = b.get("variant_index", 0)
+				header_edits = self._get_header_edits(header_name, san)
+				cond = header_edits.get(vidx, {}).get("condition", b.get("condition", ""))
+				idx = autogen_index(cond, var)
+				if idx is not None:
+					existing_indices.add(idx)
+
+			for b in selected_blocks:
+				san = b.get("san")
+				vidx = b.get("variant_index", 0)
+				slot = self._ensure_header_slot(header_name, san)
+
+				existing_draw = slot.get(vidx, {}).get("draw", b.get("draw", ""))
+				existing_comment = slot.get(vidx, {}).get("comment", b.get("comment", ""))
+				current_cond = slot.get(vidx, {}).get("condition", b.get("condition", ""))
+
+				if current_cond and not is_autogen(current_cond, var):
+					continue
+
+				if not existing_indices:
+					cond = f"${var}"
+					existing_indices.add(0)
+				else:
+					next_i = max(existing_indices) + 1
+					cond = f"${var} == {next_i}"
+					existing_indices.add(next_i)
+
+				slot[vidx] = {
+					"comment": existing_comment,
+					"draw": existing_draw,
+					"condition": cond
+				}
+
+				changed.append((header_key, san, vidx))
+
+			slot = self._ensure_header_slot(header_name, base)
+
+			auto_entries = {}
+
+			for b2 in all_blocks:
+				vid = b2.get("variant_index", 0)
+				cond = slot.get(vid, {}).get("condition", b2.get("condition", ""))
+				idx = autogen_index(cond, var)
+				if idx is not None:
+					auto_entries[idx] = (vid, cond)
+
+			for vid, val in list(slot.items()):
+				cond = val.get("condition", "")
+				idx = autogen_index(cond, var)
+				if idx is not None:
+					auto_entries[idx] = (vid, cond)
+
+			if len(auto_entries) > 1 and 0 in auto_entries:
+				vid0, cond0 = auto_entries[0]
+				if cond0.strip() == f"${var}":
+					slot.setdefault(vid0, {})
+					slot[vid0]["condition"] = f"${var} == 0"
+
+		cur_row = self.header_list.currentRow()
+		if 0 <= cur_row < self.header_list.count():
+			key = self.header_list.item(cur_row).data(Qt.UserRole)
+			self.populate_and_reapply(key)
+
+		if "editor" in globals() and editor and hasattr(editor, "statusBar"):
+			try:
+				editor.statusBar().showMessage(f"Updated {len(changed)} If Block(s).", 3000)
+			except Exception:
+				pass
+
+		self.apply_edits_to_parent()
+
+	def get_all_blocks_for_insert(self, block_type="drawindexed"):
+		result = []
+
+		print("BLOCKS_BY_HEADER:", len(self.blocks_by_header))
+
+		for header_key, blist in self.blocks_by_header.items():
+			print("HEADER:", header_key, "COUNT:", len(blist))
+
+			for b in blist:
+				print("  DRAW:", b.get("draw"))
+
+				if block_type == "drawindexed":
+					if "drawindexed" not in (b.get("draw", "") or "").lower():
+						continue
+
 				label = self._label_for_block(b, header_key)
+				text = b.get("text", "")
 
-			it = QListWidgetItem(label)
-			it.setData(Qt.UserRole, (header_key, b))
-			self.block_list.addItem(it)
+				result.append((label, text))
 
-		if blist:
-			self.block_list.setCurrentRow(0)
+		print("RESULT COUNT:", len(result))
+		return result
+
+	def get_insert_target_editor(self):
+		# Zmień kolejność, jeśli masz tu inny właściwy edytor.
+		if hasattr(self, "raw_block_edit"):
+			return self.raw_block_edit
+
+		if hasattr(self, "ini_editor"):
+			return self.ini_editor
+
+		return None
+
+	def get_active_editor(self):
+		editor = self.get_insert_target_editor()
+		if editor:
+			return editor
+		return None
+
+
+class BindingsEditorDialog(QDialog):
+	def __init__(self, ini_text, parent=None, filename=None, saved_edits=None):
+		super().__init__(parent)
+
+		if saved_edits is None:
+			saved_edits = {}
+
+		self.setWindowTitle("Bindings Editor")
+		self.resize(1400, 820)
+
+		self.parent = parent
+		self.filename = filename or "__SESSION__"
+		self.ini_text = (
+			parent.ini_editor.toPlainText()
+			if parent is not None and hasattr(parent, "ini_editor")
+			else (ini_text or "")
+		)
+		self.saved_edits = saved_edits
+
+		main_layout = QVBoxLayout(self)
+
+		self.tabs = QTabWidget()
+		main_layout.addWidget(self.tabs)
+
+		# ---------------- DrawIndexed TAB ----------------
+		self.draw_tab = QWidget()
+		draw_tab_layout = QVBoxLayout(self.draw_tab)
+		draw_tab_layout.setContentsMargins(0, 0, 0, 0)
+		draw_tab_layout.setSpacing(6)
+
+		# Splitter gives proper resize behavior and avoids weird click/hitbox issues
+		self.draw_splitter = QSplitter(Qt.Horizontal)
+		draw_tab_layout.addWidget(self.draw_splitter, 1)
+
+		self.draw_page = DrawIndexedPage(
+			self.ini_text,
+			parent=parent,
+			filename=self.filename,
+			saved_edits=self.saved_edits
+		)
+
+		self.texture_page = TextureEditorPage(
+			self.ini_text,
+			parent=parent,
+			filename=self.filename,
+			saved_edits=self.saved_edits
+		)
+
+		self.quick_panel = QuickInsertPanel(
+			get_blocks_fn=lambda: self.texture_page.get_all_blocks_for_insert(),
+			get_target_editor_fn=lambda: self.draw_page.get_insert_target_editor(),
+			parent=self.draw_tab
+		)
+
+		self.draw_splitter.addWidget(self.draw_page)
+		self.draw_splitter.addWidget(self.quick_panel)
+
+		self.draw_splitter.setStretchFactor(0, 1)
+		self.draw_splitter.setStretchFactor(1, 0)
+		self.quick_panel.setMinimumWidth(320)
+		self.quick_panel.setMaximumWidth(520)
+		self.draw_splitter.setSizes([980, 360])
+
+		# DrawIndexed-only button row
+		self.draw_btn_row = QHBoxLayout()
+
+		self.btn_apply_draw = QPushButton("Apply")
+		self.btn_apply_draw.clicked.connect(self.apply_all)
+		self.draw_btn_row.addWidget(self.btn_apply_draw)
+
+		draw_tab_layout.addLayout(self.draw_btn_row)
+
+		self.tabs.addTab(self.draw_tab, "DrawIndexed")
+
+		# ---------------- Textures TAB ----------------
+		self.texture_tab = QWidget()
+		texture_tab_layout = QVBoxLayout(self.texture_tab)
+		texture_tab_layout.setContentsMargins(0, 0, 0, 0)
+
+		self.texture_page_tab = TextureEditorPage(
+			self.ini_text,
+			parent=self.texture_tab,
+			filename=self.filename,
+			saved_edits=self.saved_edits
+		)
+		texture_tab_layout.addWidget(self.texture_page_tab)
+		self.tabs.addTab(self.texture_tab, "Textures")
+
+		# ---------------- Bottom buttons ----------------
+		btn_row = QHBoxLayout()
+		btn_row.addStretch(1)
+
+		self.btn_close = QPushButton("Close")
+		btn_row.addWidget(self.btn_close)
+		main_layout.addLayout(btn_row)
+
+		self.btn_close.clicked.connect(self.accept)
+
+		self.tabs.currentChanged.connect(self._sync_tab_ui)
+		self._sync_tab_ui(self.tabs.currentIndex())
+
+		if self.parent is not None:
+			setattr(self.parent, "bindings_dialog", self)
+
+	def _sync_tab_ui(self, idx):
+		current_widget = self.tabs.widget(idx)
+		is_draw_tab = current_widget is self.draw_tab
+
+		# Apply is only visible on DrawIndexed tab
+		self.btn_apply_draw.setVisible(is_draw_tab)
+
+		# Sidebar should only be visible on DrawIndexed tab
+		self.quick_panel.setVisible(is_draw_tab)
+
+	def refresh_all_from_ini(self, new_ini_text: str):
+		self.ini_text = new_ini_text or ""
+
+		if hasattr(self.draw_page, "refresh_from_ini"):
+			self.draw_page.refresh_from_ini(self.ini_text)
+
+		if hasattr(self.texture_page, "refresh_from_ini"):
+			self.texture_page.refresh_from_ini(self.ini_text)
+
+		if hasattr(self.texture_page_tab, "refresh_from_ini"):
+			self.texture_page_tab.refresh_from_ini(self.ini_text)
+
+		if hasattr(self.quick_panel, "reload"):
+			self.quick_panel.reload()
+
+	def apply_all(self):
+		if hasattr(self.draw_page, "save_changes_local"):
+			self.draw_page.save_changes_local()
+
+		if hasattr(self.draw_page, "apply_edits_to_parent"):
+			self.draw_page.apply_edits_to_parent()
+
+
+class QuickInsertPanel(QWidget):
+	def __init__(self, get_blocks_fn, get_target_editor_fn, parent=None):
+		super().__init__(parent)
+
+		self.get_blocks_fn = get_blocks_fn
+		self.get_target_editor_fn = get_target_editor_fn
+
+		self._items_cache = []
+
+		self._build_ui()
+		self._connect()
+		self.reload()
+
+	def _build_ui(self):
+		layout = QVBoxLayout(self)
+
+		self.search = QLineEdit()
+		self.search.setPlaceholderText("Search by name or code...")
+		layout.addWidget(self.search)
+
+		self.list = QListWidget()
+		self.list.setMouseTracking(True)
+		self.list.setSelectionMode(QAbstractItemView.NoSelection)
+		self.list.itemClicked.connect(self.insert_selected)
+		layout.addWidget(self.list)
+
+		self.preview = QTextEdit()
+		self.preview.setReadOnly(True)
+		self.preview.setMinimumHeight(140)
+		self.preview.setPlaceholderText("Hover or select a block to preview it here.")
+		layout.addWidget(self.preview)
+
+		self.refresh_btn = QPushButton("Refresh")
+		layout.addWidget(self.refresh_btn)
+
+	def _connect(self):
+		self.search.textChanged.connect(self.filter_list)
+		self.list.currentItemChanged.connect(self._update_preview_from_current)
+		self.list.itemEntered.connect(self._update_preview)
+		self.refresh_btn.clicked.connect(self.reload)
+
+	def reload(self):
+		self._items_cache = []
+		self.list.blockSignals(True)
+		self.list.clear()
+
+		blocks = self.get_blocks_fn() or []
+		for entry in blocks:
+			# expected: (label, code)
+			if isinstance(entry, (tuple, list)) and len(entry) >= 2:
+				label, code = entry[0], entry[1]
+			else:
+				label, code = str(entry), ""
+
+			item = QListWidgetItem(label)
+			item.setData(Qt.UserRole, {
+				"label": label,
+				"code": code or "",
+			})
+			self.list.addItem(item)
+			self._items_cache.append(item)
+
+		self.list.blockSignals(False)
+		self.filter_list(self.search.text())
+
+		if self.list.count():
+			self.list.setCurrentRow(0)
+		else:
+			self.preview.clear()
+
+	def filter_list(self, text):
+		q = (text or "").strip().lower()
+
+		for i in range(self.list.count()):
+			item = self.list.item(i)
+			data = item.data(Qt.UserRole) or {}
+			label = (data.get("label") or item.text() or "").lower()
+			code = (data.get("code") or "").lower()
+
+			match = (
+				not q
+				or q in label
+				or q in code
+			)
+			item.setHidden(not match)
+
+		self._update_preview_from_current()
+
+	def _update_preview(self, item):
+		if not item:
+			self.preview.clear()
+			return
+
+		data = item.data(Qt.UserRole) or {}
+		label = data.get("label", "")
+		code = data.get("code", "")
+
+		self.preview.setPlainText(f"{label}\n\n{code}".rstrip())
+
+	def _update_preview_from_current(self, *args):
+		item = self.list.currentItem()
+		self._update_preview(item)
+
+	def insert_selected(self, item):
+		if not item:
+			return
+
+		data = item.data(Qt.UserRole) or {}
+		text = data.get("code", "") or ""
+		editor = self.get_target_editor_fn()
+
+		print(editor)
+		if not editor or not hasattr(editor, "textCursor"):
+			print("Chuj")
+			return
+
+		cursor = editor.textCursor()
+		cursor.insertText(text)
+		editor.setTextCursor(cursor)
+		editor.setFocus()
 
 
 class CursorOverlay(QLabel):
@@ -7921,14 +7905,14 @@ class CursorOverlay(QLabel):
 		self.setAttribute(Qt.WA_ShowWithoutActivating)
 
 		self.setStyleSheet("""
-            QLabel {
-                background-color: rgba(30, 30, 30, 200);
-                color: white;
-                padding: 4px 8px;
-                border-radius: 6px;
-                font-size: 10pt;
-            }
-        """)
+			QLabel {
+				background-color: rgba(30, 30, 30, 200);
+				color: white;
+				padding: 4px 8px;
+				border-radius: 6px;
+				font-size: 10pt;
+			}
+		""")
 
 		self.hide()
 
@@ -7943,6 +7927,47 @@ class CursorOverlay(QLabel):
 			self.show()
 
 
+class DebugOverlay:
+	def __init__(self, view):
+		self.view = view
+		self.enabled = True
+
+	def draw(self, painter):
+		if not self.enabled:
+			return
+
+		vp = self.view.viewport()
+		rect = vp.rect()
+
+		# 🔴 viewport border
+		painter.setPen(QPen(Qt.red, 2))
+		painter.drawRect(rect)
+
+		# 🔵 scene draw rect (letterbox area)
+		sr = self.view.sceneRect()
+		vw, vh = rect.width(), rect.height()
+
+		scale = min(vw / sr.width(), vh / sr.height())
+		draw_w = sr.width() * scale
+		draw_h = sr.height() * scale
+
+		offset_x = (vw - draw_w) / 2
+		offset_y = (vh - draw_h) / 2
+
+		scene_rect = QRectF(offset_x, offset_y, draw_w, draw_h)
+
+		painter.setPen(QPen(Qt.blue, 2))
+		painter.drawRect(scene_rect)
+
+		# 🟢 crosshair (cursor)
+		cursor = QCursor.pos()
+		local = vp.mapFromGlobal(cursor)
+
+		painter.setPen(QPen(Qt.green, 1))
+		painter.drawLine(local.x() - 10, local.y(), local.x() + 10, local.y())
+		painter.drawLine(local.x(), local.y() - 10, local.x(), local.y() + 10)
+
+
 class MenuEditor(QMainWindow):
 	def __init__(self):
 		super().__init__()
@@ -7952,6 +7977,8 @@ class MenuEditor(QMainWindow):
 		screen_size = screen.size()
 		self.screen_width = screen_size.width()
 		self.screen_height = screen_size.height()
+
+		self.preview_window = None
 
 		main_widget = QWidget()
 		self.setCentralWidget(main_widget)
@@ -8021,6 +8048,8 @@ class MenuEditor(QMainWindow):
 		self.lock_z = False
 		self.lock_aspect = False
 		self.grid_size = 16
+
+		self.last_export_dir = IMAGES_DIR
 
 		if cfg.get('first_run', 1) == 1:
 			QTimer.singleShot(200, self.show_welcome)
@@ -8339,15 +8368,30 @@ class MenuEditor(QMainWindow):
 			layout.addWidget(cb_groups)
 			layout.addWidget(cb_pages)
 
-			cb_backup = QCheckBox("Backup current state before clearing")
+			cb_backup = QCheckBox("Backup Selected on Clear")
 			cb_backup.setChecked(True)
 			layout.addWidget(cb_backup)
 
 			btn_clear = QPushButton("Clear Selected")
 			layout.addWidget(btn_clear)
 
-			def on_clear():
+			btn_backup = QPushButton("Backup Selected without Clearing")
+			layout.addWidget(btn_backup)
+
+			def backup_selected():
+				sections = get_selected_sections()
+
+				name_prefix = snapshot_name_input.text().strip()
+				if name_prefix:
+					snap_name = f"{name_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+				else:
+					snap_name = f"snapshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+				self.save_snapshot(name = snap_name, include = sections)
+
+			def get_selected_sections():
 				sections = []
+
 				if cb_templates.isChecked(): sections.append("templates")
 				if cb_displayed.isChecked(): sections.append("display_items")
 				if cb_code.isChecked(): sections.append("code_elements")
@@ -8355,18 +8399,17 @@ class MenuEditor(QMainWindow):
 				if cb_groups.isChecked(): sections.append("groups")
 				if cb_pages.isChecked(): sections.append("pages")
 
+				return sections
+
+			def on_clear():
+				sections = get_selected_sections()
+
 				if not sections:
 					QMessageBox.warning(dialog, "Nothing selected", "No sections selected to clear.")
 					return
 
 				if cb_backup.isChecked():
-					name_prefix = snapshot_name_input.text().strip()
-					if name_prefix:
-						snap_name = f"{name_prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-					else:
-						snap_name = f"snapshot_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-					# save snapshot BEFORE clearing
-					self.save_snapshot(name = snap_name, include = sections)
+					backup_selected()
 
 				if "templates" in sections:
 					self.templates.clear()
@@ -8397,6 +8440,7 @@ class MenuEditor(QMainWindow):
 				dialog.accept()
 
 			btn_clear.clicked.connect(on_clear)
+			btn_backup.clicked.connect(backup_selected)
 			dialog.exec()
 
 		btn_restore.clicked.connect(restore_snapshot_dialog)
@@ -8408,24 +8452,22 @@ class MenuEditor(QMainWindow):
 		# ---------------- CENTER PANEL ----------------
 		self.scene = QGraphicsScene(0, 0, self.screen_width, self.screen_height)
 		self.scene.editor = self
+
 		self.view = LockedView(self.scene)
 
-		# self.h_ruler = HorizontalRuler(self.view)
-		# self.v_ruler = VerticalRuler(self.view)
-		#
-		# self.h_ruler.raise_()
-		# self.v_ruler.raise_()
-
-		# self.view.viewChanged.connect(self.update_rulers)
+		self.view.auto_fit = True
+		self.view.keep_aspect_ratio = True
+		self.view.fit_canvas_to_view()
 
 		self.view.setRenderHint(QPainter.Antialiasing)
 		self.view.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 		self.view.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
 		self.view.setMouseTracking(True)
 		self.view.viewport().setMouseTracking(True)
+
 		main_layout.addWidget(self.view, 1)
 
-		# Right panel container
+		# ---------------- RIGHT PANEL ----------------
 		self.right_panel = QWidget()
 		self.right_layout = QVBoxLayout(self.right_panel)
 		self.right_layout.setContentsMargins(5, 5, 5, 5)
@@ -8754,6 +8796,142 @@ class MenuEditor(QMainWindow):
 
 	# Methods
 
+	def export_selected_images_with_tint(self, selected_items, export_dir=IMAGES_DIR):
+
+		if not export_dir:
+			return
+
+		os.makedirs(export_dir, exist_ok = True)
+
+		exported = set()
+
+		for item in selected_items:
+			if not hasattr(item, "original_pixmap"):
+				continue
+
+			# Dedupe by source + tint + size, so the same exact image/tint combo exports once.
+			path_key = getattr(item, "pixmap_path", "") or ""
+			size_key = (
+				item.pixmap().width() if item.pixmap() and not item.pixmap().isNull() else item.original_pixmap.width(),
+				item.pixmap().height() if item.pixmap() and not item.pixmap().isNull() else item.original_pixmap.height(),
+			)
+			color = getattr(item, "tint_color", QColor(255, 255, 255))
+			key = (
+				path_key,
+				int(getattr(item, "tint_percent", 0)),
+				color.red(), color.green(), color.blue(), color.alpha(),
+				size_key[0], size_key[1]
+			)
+
+			if key in exported:
+				continue
+			exported.add(key)
+
+			pm = item.get_tinted_pixmap()
+			if pm.isNull():
+				continue
+
+			base = os.path.basename(path_key) if path_key else getattr(item, "name", "image")
+			name, _ = os.path.splitext(base)
+			ext = os.path.splitext(path_key)[1].lower()
+
+			if not ext:
+				ext = ".png"
+
+			out_path = os.path.join(export_dir, f"{name}{ext}")
+
+			i = 1
+			while os.path.exists(out_path):
+				out_path = os.path.join(export_dir, f"{name}_{i}{ext}")
+				i += 1
+
+			ext = os.path.splitext(path_key)[1].lower()
+
+			# DDS export
+			if ext == ".dds":
+
+				temp_png = os.path.join(export_dir, "__temp_export.png")
+
+				# Save temporary PNG first
+				pm.save(temp_png, "PNG")
+
+				try:
+					subprocess.run(
+						[
+							TEXCONV_PATH,
+							"-y",
+							"-ft", "DDS",
+							"-o", export_dir,
+							temp_png
+						],
+						check = True,
+						creationflags = subprocess.CREATE_NO_WINDOW
+					)
+
+					# texconv outputs __temp_export.DDS
+					generated_dds = os.path.join(export_dir, "__temp_export.DDS")
+
+					final_dds = out_path.rsplit(".", 1)[0] + ".dds"
+
+					if os.path.exists(generated_dds):
+						if os.path.exists(final_dds):
+							os.remove(final_dds)
+
+						os.rename(generated_dds, final_dds)
+
+				finally:
+					if os.path.exists(temp_png):
+						os.remove(temp_png)
+
+			else:
+				pm.save(out_path)
+
+	def _blue_fit_rect(self):
+		vp = self.view.viewport()
+		sr = self.view.sceneRect()
+
+		vw = max(1, vp.width())
+		vh = max(1, vp.height())
+		sw = max(1.0, sr.width())
+		sh = max(1.0, sr.height())
+
+		s = min(vw / sw, vh / sh)
+		draw_w = sw * s
+		draw_h = sh * s
+		off_x = (vw - draw_w) / 2.0
+		off_y = (vh - draw_h) / 2.0
+
+		return QRectF(off_x, off_y, draw_w, draw_h)
+
+	def viewport_to_virtual(self, global_pos):
+		vp = self.view.viewport()
+		local = vp.mapFromGlobal(global_pos)
+
+		blue = self._blue_fit_rect()
+		if blue.width() <= 0 or blue.height() <= 0:
+			return QPointF(0, 0)
+
+		x = float(local.x())
+		y = float(local.y())
+
+		# liczymy TYLKO po blue rect
+		u = (x - blue.left()) / blue.width()
+		v = (y - blue.top()) / blue.height()
+
+		u = max(0.0, min(u, 1.0))
+		v = max(0.0, min(v, 1.0))
+
+		return QPointF(u * 1920.0, v * 1080.0)
+
+	def hide_ui(self):
+		if self.preview_window is not None:
+			self.preview_window.close()
+			self.preview_window = None
+			return
+
+		self.preview_window = PreviewWindow(self.scene)
+		self.preview_window.showFullScreen()
+
 	def update_save_button_state(self):
 		has_file = self.current_ini_path is not None
 		self.save_changes_button.setVisible(has_file)
@@ -8964,37 +9142,37 @@ class MenuEditor(QMainWindow):
 	def _on_pos_live(self):
 		if getattr(self, "_ui_changing", False):
 			return
+
 		item = getattr(self, "active_item", None)
 		if not item:
 			return
 
 		try:
-			x = int(parse_size(self.settings_pos_x_entry.text(), self.screen_width))
-			y = int(parse_size(self.settings_pos_y_entry.text(), self.screen_height))
+			x = float(self.settings_pos_x_entry.text().strip())
+			y = float(self.settings_pos_y_entry.text().strip())
 		except ValueError:
 			return
 
-		newPos = self.screen_to_scene(QPoint(x, y))
-		item.setPos(newPos.x(), newPos.y())
+		item.setPos(QPointF(x, y))
+		self.scene.update()
 
 	def _on_pos_finished(self):
 		if getattr(self, "_ui_changing", False):
 			return
+
 		item = getattr(self, "active_item", None)
 		if not item:
 			return
 
 		old = self._field_start_values.pop("pos", None)
 		if old is None:
-			old = QPoint(int(item.pos().x()), int(item.pos().y()))
+			old = QPointF(item.pos())
 
 		try:
-			new = QPoint(
-				int(self.settings_pos_x_entry.text()),
-				int(self.settings_pos_y_entry.text())
+			new = QPointF(
+				float(self.settings_pos_x_entry.text().strip()),
+				float(self.settings_pos_y_entry.text().strip())
 			)
-
-			new = self.screen_to_scene(new)
 		except ValueError:
 			return
 
@@ -9140,33 +9318,29 @@ class MenuEditor(QMainWindow):
 
 		old = self._field_start_values.pop(
 			"parent_offset",
-			(getattr(item, "parent_offset_x", 0),
-			 getattr(item, "parent_offset_y", 0))
+			(getattr(item, "parent_offset_x", 0), getattr(item, "parent_offset_y", 0))
 		)
 
 		try:
 			new = (
-				float(self.parent_offset_x_entry.text()),
-				float(self.parent_offset_y_entry.text())
+				float(self.parent_offset_x_entry.text().strip()),
+				float(self.parent_offset_y_entry.text().strip())
 			)
-		except:
+		except ValueError:
 			return
 
 		if old == new:
 			return
 
-		# undo batch
 		batch = BatchCommand("Parent Offset")
 		batch.add(PropertyCommand(item, "parent_offset_x", old[0], new[0]))
 		batch.add(PropertyCommand(item, "parent_offset_y", old[1], new[1]))
 		self.undo_stack.push(batch)
 
-		# 🔥 wymuś aktualizację pozycji
 		item.setPos(
 			parent.pos().x() + new[0],
 			parent.pos().y() + new[1]
 		)
-
 		self.scene.update()
 
 	def _set_active_item_widgets(self, item):
@@ -9176,82 +9350,53 @@ class MenuEditor(QMainWindow):
 
 		self._ui_changing = True
 		try:
-			# Name
 			self.settings_name_entry.setText(getattr(item, "name", ""))
 
-			# Type
 			type_name = getattr(item, "type_name", "")
 			idx = self.settings_type_name.findText(type_name)
 			if idx >= 0:
 				self.settings_type_name.setCurrentIndex(idx)
 			else:
-				# optionally set text if not found
 				self.settings_type_name.setCurrentText(type_name)
 
-			# Width / Height - try method first, then attribute
 			pix = None
 			try:
-				pix = item.pixmap()  # QGraphicsPixmapItem
+				pix = item.pixmap()
 			except Exception:
 				pix = getattr(item, "original_pixmap", None) or getattr(item, "_pixmap", None)
+
 			if pix:
 				self.settings_width_entry.setText(str(pix.width()))
 				self.settings_height_entry.setText(str(pix.height()))
 			else:
-				self.settings_width_entry.setText("")
-				self.settings_height_entry.setText("")
+				self.settings_width_entry.setText("0")
+				self.settings_height_entry.setText("0")
 
-			# Position (scene -> screen) - use pos() (QGraphicsItem)
-			pos = None
-			try:
-				pos = item.pos()
-			except Exception:
-				pos = getattr(item, "_pos", QPointF(0, 0))
+			pos = QPointF(item.pos())
+			self.settings_pos_x_entry.setText(str(int(round(pos.x()))))
+			self.settings_pos_y_entry.setText(str(int(round(pos.y()))))
 
-			# convert scene point to screen if you have view helper, otherwise use as-is
-			try:
-				if hasattr(self, "scene_to_screen"):
-					screen_pt = self.scene_to_screen(pos)
-				else:
-					# best-effort: if you have a view called self.view
-					if hasattr(self, "view"):
-						screen_pt = self.view.mapFromScene(pos)
-					else:
-						screen_pt = pos
-				self.settings_pos_x_entry.setText(str(int(screen_pt.x())))
-				self.settings_pos_y_entry.setText(str(int(screen_pt.y())))
-			except Exception:
-				self.settings_pos_x_entry.setText("0")
-				self.settings_pos_y_entry.setText("0")
-
-			# Parent
 			parent_name = getattr(item, "parent_item", None)
 			if parent_name is None:
-				# choose an index that represents "no parent" or clear text
-				# avoid -1 if your combobox doesn't accept it
 				self.parent_select.setCurrentIndex(0)
-				self.parent_offset_x_entry.setText('0')
-				self.parent_offset_y_entry.setText('0')
+				self.parent_offset_x_entry.setText("0")
+				self.parent_offset_y_entry.setText("0")
 			else:
 				idx = self.parent_select.findText(str(parent_name))
 				if idx >= 0:
 					self.parent_select.setCurrentIndex(idx)
 				else:
-					# fallback: add it or set text
 					self.parent_select.setCurrentText(str(parent_name))
 
-				parent = next((elem for elem in (getattr(editor, "display_items", []) if editor else []) if
-							   elem.name == item.parent_item), None)
+				parent = next((elem for elem in self.display_items if elem.name == parent_name), None)
 				if parent:
-					child_screen = editor.scene_to_screen(item.pos())
-					parent_screen = editor.scene_to_screen(parent.pos())
-					parent_offset_x = child_screen.x() - parent_screen.x()
-					parent_offset_y = child_screen.y() - parent_screen.y()
+					parent_pos = QPointF(parent.pos())
+					self.parent_offset_x_entry.setText(str(int(round(pos.x() - parent_pos.x()))))
+					self.parent_offset_y_entry.setText(str(int(round(pos.y() - parent_pos.y()))))
+				else:
+					self.parent_offset_x_entry.setText("0")
+					self.parent_offset_y_entry.setText("0")
 
-					self.parent_offset_x_entry.setText(str(parent_offset_x))
-					self.parent_offset_y_entry.setText(str(parent_offset_y))
-
-			# Tint
 			self.settings_tint_slider.setValue(int(getattr(item, "tint_percent", 0)))
 		finally:
 			self._ui_changing = False
@@ -9528,7 +9673,7 @@ class MenuEditor(QMainWindow):
 
 	@staticmethod
 	def strip_generated(text):
-		marker = "; GENERATED by MCreatorV3.3.6B - by Nurarihyon"
+		marker = "; GENERATED by MCreatorV"
 		idx = text.find(marker)
 		if idx != -1:
 			return text[:idx].rstrip()
@@ -9558,11 +9703,11 @@ class MenuEditor(QMainWindow):
 
 	def parse_ini_sections(self, text):
 		"""
-        Returns (preamble_lines_list, sections_dict, order_list)
-        - preamble_lines_list: list of raw lines before the first [Header]
-        - sections_dict: { section_name: [block_text, ...], ... }
-        - order_list: list of section names in original order
-        """
+		Returns (preamble_lines_list, sections_dict, order_list)
+		- preamble_lines_list: list of raw lines before the first [Header]
+		- sections_dict: { section_name: [block_text, ...], ... }
+		- order_list: list of section names in original order
+		"""
 		sections = {}
 		order = []
 		preamble = []
@@ -9598,13 +9743,13 @@ class MenuEditor(QMainWindow):
 
 	def merge_constants(self, blocks_or_lines):
 		"""
-        Merge Constants by grouping lines that share the same $var base.
-        - Preserves internal formatting & blank lines inside groups.
-        - Groups are separated by a single blank line.
-        - Extracts if...endif blocks and appends them at the end.
-        - Deduplicates exact non-blank lines (first occurrence kept).
-        - Returns a string that ends with exactly one newline.
-        """
+		Merge Constants by grouping lines that share the same $var base.
+		- Preserves internal formatting & blank lines inside groups.
+		- Groups are separated by a single blank line.
+		- Extracts if...endif blocks and appends them at the end.
+		- Deduplicates exact non-blank lines (first occurrence kept).
+		- Returns a string that ends with exactly one newline.
+		"""
 		# regexes
 		if_start_re = re.compile(r'^\s*if\b')
 		if_end_re = re.compile(r'^\s*endif\b')
@@ -9743,12 +9888,12 @@ class MenuEditor(QMainWindow):
 
 	def rebuild_ini_structured(self, original_text, generated_text):
 		"""
-        Rebuild INI preserving:
-          - preamble (lines before first [Header]) on top
-          - original sections in original order (merged Constants/Present using existing helpers)
-          - generated sections grouped/placed after original (wrapped as their own sections)
-          - extra spacing between different section types
-        """
+		Rebuild INI preserving:
+		  - preamble (lines before first [Header]) on top
+		  - original sections in original order (merged Constants/Present using existing helpers)
+		  - generated sections grouped/placed after original (wrapped as their own sections)
+		  - extra spacing between different section types
+		"""
 		preamble, orig_sections, orig_order = self.parse_ini_sections(original_text)
 		out_parts = []
 
@@ -9994,13 +10139,31 @@ class MenuEditor(QMainWindow):
 		if not edits:
 			return ini_text
 
-		# 1️⃣ Collect toggle vars (case-insensitive storage)
+		def _extract_condition(block):
+			# New format: dict with condition
+			if isinstance(block, dict):
+				return block.get("condition") or block.get("cond") or block.get("if") or ""
+
+			# Legacy / fallback: plain string
+			if isinstance(block, str):
+				return block
+
+			# Anything else -> ignore
+			return ""
+
+		# 1) Collect toggle vars (case-insensitive storage)
 		toggle_vars_lower = set()
 
 		for group in edits.values():
+			if not isinstance(group, dict):
+				continue
+
 			for index_dict in group.values():
+				if not isinstance(index_dict, dict):
+					continue
+
 				for block in index_dict.values():
-					cond = block.get("condition")
+					cond = _extract_condition(block)
 					if not cond:
 						continue
 
@@ -10010,7 +10173,7 @@ class MenuEditor(QMainWindow):
 		if not toggle_vars_lower:
 			return ini_text
 
-		# 2️⃣ Collect already declared vars (case-insensitive)
+		# 2) Collect already declared vars (case-insensitive)
 		declared_lower = set()
 
 		for m in re.finditer(
@@ -10019,12 +10182,12 @@ class MenuEditor(QMainWindow):
 		):
 			declared_lower.add(m.group(1).lstrip('$').lower())
 
-		# 3️⃣ Compute missing
+		# 3) Compute missing
 		missing_lower = sorted(toggle_vars_lower - declared_lower)
 		if not missing_lower:
 			return ini_text
 
-		# 4️⃣ Build insert lines in TitleCase
+		# 4) Build insert lines in TitleCase
 		insert_lines = [
 			f"global persist ${self._to_title_case(v)}"
 			for v in missing_lower
@@ -10032,7 +10195,7 @@ class MenuEditor(QMainWindow):
 
 		insert_text = "\n".join(insert_lines)
 
-		# 5️⃣ Insert after last variable in [Constants]
+		# 5) Insert after last variable in [Constants]
 		m = re.search(r'(?im)^[ \t]*\[constants\][ \t]*$', ini_text)
 		if not m:
 			return ini_text
@@ -10275,10 +10438,10 @@ class MenuEditor(QMainWindow):
 			raw_line = lines[i]
 
 			# detect Loop block
-			if raw_line.strip() == "Loop:":
+			if raw_line.strip() == "{Loop:}":
 				i += 1
 				loop_lines = []
-				while i < n and lines[i].strip() != "EndLoop":
+				while i < n and lines[i].strip() != "{EndLoop}":
 					loop_lines.append(lines[i])
 					i += 1
 				# skip EndLoop (if present)
@@ -10347,7 +10510,7 @@ class MenuEditor(QMainWindow):
 					# Emit each line of the block with per-iteration substitutions
 					for l in loop_lines:
 						# FIRST: process {if ...} for this iteration
-						line = _process_conditionals_in_line(l, code, idx, all_visuals = self.display_items,
+						line = _process_conditionals_in_line(l, code, idx=idx, all_visuals = self.display_items,
 															 all_code = self.code_elements)
 
 						# replace {key} / {key.xN} similarly
@@ -10605,18 +10768,151 @@ class MenuEditor(QMainWindow):
 
 	# ---------------- Event Filter / Blender-like editing ----------------
 
+	def _normalize_size_tuple(self, s):
+		if hasattr(s, "width"):
+			return (int(s.width()), int(s.height()))
+		if isinstance(s, (tuple, list)) and len(s) >= 2:
+			return (int(s[0]), int(s[1]))
+		return (1, 1)
+
+	def _item_pixmap_size(self, item):
+		pm = item.pixmap()
+		if pm is not None and not pm.isNull():
+			return pm.size()
+		orig = getattr(item, "original_pixmap", None)
+		if orig is not None and not orig.isNull():
+			return orig.size()
+		br = item.boundingRect()
+		return QSize(max(1, int(br.width())), max(1, int(br.height())))
+
+	def begin_transform_state(self):
+		self.start_item_states = {
+			item: (QPointF(item.pos()), QSize(self._item_pixmap_size(item)))
+			for item in self.edit_items
+		}
+		self.start_move_positions = {
+			item: QPointF(item.pos())
+			for item in self.edit_items
+		}
+		self.start_scene_pos = None
+		self.start_mouse_global = None
+		#for item in self.edit_items:
+		#	self.start_item_states[item] = item.pos() - self.start_scene_pos
+
+	def finish_transform_batch(self, text="Transform Items"):
+		batch = BatchCommand(text)
+
+		for item, (old_pos, old_size) in list(self.start_item_states.items()):
+			new_pos = item.pos()
+			new_size = (item.pixmap().width(), item.pixmap().height())
+			old_size_t = self._normalize_size_tuple(old_size)
+
+			if (new_pos != old_pos) or (new_size != old_size_t):
+				cmd = TransformCommand(
+					item,
+					old_pos,
+					old_size_t,
+					new_pos,
+					new_size,
+					text = "Transform Item"
+				)
+				batch.add(cmd)
+
+		if batch.cmds:
+			self.allow_rebuild_ini = False
+			self.undo_stack.push(batch)
+
+	def resize_from_anchor(self, start_pos, start_size, dx, dy, anchor, lock_aspect=False):
+		"""
+		start_pos: QPointF
+		start_size: QSize
+		dx/dy: mouse delta in pixels
+		anchor: "br","bl","tr","tl","l","r","t","b","center"
+		"""
+		start_x = float(start_pos.x())
+		start_y = float(start_pos.y())
+		start_w = float(start_size.width())
+		start_h = float(start_size.height())
+
+		new_x = start_x
+		new_y = start_y
+		new_w = start_w
+		new_h = start_h
+
+		if anchor == "center":
+			new_x = start_x - dx
+			new_y = start_y - dy
+			new_w = start_w + (dx * 2.0)
+			new_h = start_h + (dy * 2.0)
+
+		else:
+			if "l" in anchor:
+				new_x = start_x + dx
+				new_w = start_w - dx
+			elif "r" in anchor:
+				new_w = start_w + dx
+
+			if "t" in anchor:
+				new_y = start_y + dy
+				new_h = start_h - dy
+			elif "b" in anchor:
+				new_h = start_h + dy
+
+		# lock aspect after the raw anchor math
+		if lock_aspect and start_h != 0:
+			aspect = start_w / start_h
+
+			# choose the dominant axis
+			if abs(dx) >= abs(dy):
+				if "l" in anchor:
+					new_w = max(1.0, new_w)
+					new_h = new_w / aspect
+					if "t" in anchor:
+						new_y = start_y + (start_h - new_h)
+					elif anchor == "center":
+						new_y = start_y - (new_h - start_h) * 0.5
+					elif "b" in anchor:
+						pass
+				else:
+					new_w = max(1.0, new_w)
+					new_h = new_w / aspect
+					if "t" in anchor:
+						new_y = start_y + (start_h - new_h)
+					elif anchor == "center":
+						new_y = start_y - (new_h - start_h) * 0.5
+			else:
+				if "t" in anchor:
+					new_h = max(1.0, new_h)
+					new_w = new_h * aspect
+					if "l" in anchor:
+						new_x = start_x + (start_w - new_w)
+					elif anchor == "center":
+						new_x = start_x - (new_w - start_w) * 0.5
+				else:
+					new_h = max(1.0, new_h)
+					new_w = new_h * aspect
+					if "l" in anchor:
+						new_x = start_x + (start_w - new_w)
+					elif anchor == "center":
+						new_x = start_x - (new_w - start_w) * 0.5
+
+		# clamp
+		new_w = max(1.0, new_w)
+		new_h = max(1.0, new_h)
+
+		return QPointF(new_x, new_y), int(round(new_w)), int(round(new_h))
+
 	def eventFilter(self, obj, event):
 		fw = QApplication.focusWidget()
 
 		if QApplication.activeModalWidget():
 			return False
 
-		# Never steal Typing
 		if isinstance(fw, (QLineEdit, QTextEdit, QComboBox)):
 			return False
 
 		if obj is self.ini_editor_frame:
-			return False  # don't intercept
+			return False
 
 		if self.edit_mode and self.edit_items and event.type() == QEvent.KeyPress and event.key() == Qt.Key_Shift:
 			self.view.show_grid = True
@@ -10629,161 +10925,293 @@ class MenuEditor(QMainWindow):
 					self.restore_start_states()
 					self.exit_edit_mode()
 					return True
+
 				if self.keybinds.matches(event, "lock_z"):
 					self.lock_z = not self.lock_z
 					self.lock_x = False
 					return True
+
 				if self.keybinds.matches(event, "lock_x"):
 					self.lock_x = not self.lock_x
 					self.lock_z = False
 					return True
+
 				if self.keybinds.matches(event, "toggle_aspect") and self.edit_mode == "scale":
 					self.lock_aspect = not self.lock_aspect
 					return True
+
 			else:
 				if self.keybinds.matches(event, "move_mode"):
 					self.enter_edit_mode("move")
 					return True
+
 				if self.keybinds.matches(event, "scale_mode"):
 					self.enter_edit_mode("scale")
 					return True
+
 				if self.keybinds.matches(event, "delete"):
 					self.delete_display_item()
 					return True
 
+			if self.keybinds.matches(event, "hide_ui"):
+				self.hide_ui()
+				return True
+
+			if self.keybinds.matches(event, "export_selected_images"):
+
+				export_dir = QFileDialog.getExistingDirectory(
+					self,
+					"Export Images",
+					self.last_export_dir
+				)
+
+				if export_dir:
+					self.last_export_dir = export_dir
+
+				if export_dir:
+					# scene selected items
+					selected = self.scene.selectedItems()
+
+					self.export_selected_images_with_tint(
+						selected,
+						export_dir
+					)
+
+				return True
+
 		elif self.edit_mode and self.edit_items and event.type() == QEvent.KeyRelease and event.key() == Qt.Key_Shift:
 			self.view.show_grid = False
 			self.view.viewport().update()
-
 			return True
 
-		# --- If we're in edit mode and user clicks another item, finish the edit first ---
-		elif self.edit_mode and self.edit_items and event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
-			try:
-				# Map cursor to scene and find topmost item under cursor
-				scene_pos = self.view.mapToScene(self.view.viewport().mapFromGlobal(QCursor.pos()))
-				items_under = self.scene.items(scene_pos)  # topmost first
-				clicked = items_under[0] if items_under else None
-
-				if clicked is None or clicked in self.edit_items or clicked not in self.edit_items:
-					# Build transform commands for changed items (same logic used on MouseButtonRelease)
-					batch = BatchCommand("Transform Items (click-finish)")
-					for item, (old_pos, old_size) in list(self.start_item_states.items()):
-						new_pos = item.pos()
-						new_size = (item.pixmap().width(), item.pixmap().height())
-						try:
-							old_size_t = (old_size.width(), old_size.height())
-						except Exception:
-							old_size_t = (old_size[0], old_size[1]) if isinstance(old_size, (list, tuple)) else old_size
-						if (new_pos != old_pos) or (new_size != old_size_t):
-							cmd = TransformCommand(item, old_pos, old_size_t, new_pos, new_size,
-												   text = "Transform Item")
-							batch.add(cmd)
-					if batch.cmds:
-						self.allow_rebuild_ini = False
-						# Push to undo stack (redo will just reapply, but state already matches)
-						self.undo_stack.push(batch)
-
-					# Finish the edit mode so selection/click can proceed cleanly
-					self.exit_edit_mode()
-					self.rebuild_ini()
-					# Do NOT return True here — allow the event to continue so Qt will select the clicked item.
-			except Exception:
-				# defensive: if anything goes wrong, restore a safe state and continue
-				try:
-					self.exit_edit_mode()
-					self.rebuild_ini()
-				except Exception:
-					pass
-
 		elif self.edit_mode and self.edit_items and event.type() == QEvent.MouseMove:
-			scene_pos = self.view.mapToScene(self.view.viewport().mapFromGlobal(QCursor.pos()))
-			delta = scene_pos - self.start_pos
+
+			cursor_pos = event.globalPosition().toPoint()
+
+			virtual_pos = self.viewport_to_virtual(cursor_pos)
+
+			global_delta = (
+
+				event.globalPosition() - self.start_mouse_global
+
+				if self.start_mouse_global is not None
+
+				else QPointF(0, 0)
+
+			)
+
+			dx = float(global_delta.x())
+
+			dy = float(global_delta.y())
+
+			# ----------------------------------------
+
+			# First movement = snapshot start state
+
+			# ----------------------------------------
+
+
+			if self.start_mouse_global is None:
+
+				self.start_mouse_global = QPointF(event.globalPosition())
+
+				# MOVE
+
+				if self.edit_mode == "move":
+
+					self.start_scene_pos = QPointF(virtual_pos)
+
+					self.start_item_states = {}
+
+					for item in self.edit_items:
+						self.start_item_states[item] = (
+
+							QPointF(item.pos()),
+
+							QSize(self._item_pixmap_size(item))
+
+						)
+
+
+				# SCALE
+
+				elif self.edit_mode == "scale":
+
+					self.start_resize_states = {}
+
+					for item in self.edit_items:
+						self.start_resize_states[item] = (
+
+							QPointF(item.pos()),
+
+							QSize(self._item_pixmap_size(item))
+
+						)
+
+				return True
+
+			# ----------------------------------------
+
+			# Transform items
+
+			# ----------------------------------------
+
 
 			for item in self.edit_items:
-				start_pos, start_size = self.start_item_states[item]
+
+				# ========================================
+
+				# MOVE
+
+				# ========================================
+
 				if self.edit_mode == "move":
-					new_pos = start_pos + delta
+
+					start_pos, start_size = self.start_item_states[item]
+
+					new_pos = QPointF(
+
+						virtual_pos.x() + (start_pos.x() - self.start_scene_pos.x()),
+
+						virtual_pos.y() + (start_pos.y() - self.start_scene_pos.y())
+
+					)
 
 					if QApplication.keyboardModifiers() & Qt.ShiftModifier:
 						g = self.view.base_grid * self.view.grid_scale
+
 						new_pos.setX(snap(new_pos.x(), g))
+
 						new_pos.setY(snap(new_pos.y(), g))
 
 					if self.lock_x:
 						new_pos.setX(start_pos.x())
+
 					if self.lock_z:
 						new_pos.setY(start_pos.y())
 
 					item.setPos(new_pos)
 
-					new_screen_pos = self.scene_to_screen(new_pos)
-					self.settings_pos_x_entry.setText(str(int(new_screen_pos.x())))
-					self.settings_pos_y_entry.setText(str(int(new_screen_pos.y())))
+					self.settings_pos_x_entry.setText(
+
+						str(int(round(new_pos.x())))
+
+					)
+
+					self.settings_pos_y_entry.setText(
+
+						str(int(round(new_pos.y())))
+
+					)
+
+
+				# ========================================
+
+				# SCALE
+
+				# ========================================
 
 				elif self.edit_mode == "scale":
-					new_w = start_size.width() + delta.x()
-					new_h = start_size.height() + delta.y()
+
+					anchor = self.resize_anchor
+
+					start_pos, start_size = self.start_resize_states[item]
+
+					new_pos, new_w, new_h = self.resize_from_anchor(
+
+						start_pos = start_pos,
+
+						start_size = start_size,
+
+						dx = dx,
+
+						dy = dy,
+
+						anchor = anchor,
+
+						lock_aspect = self.lock_aspect
+
+					)
+
+					if self.lock_x:
+						new_w = start_size.width()
+
+						new_pos.setX(start_pos.x())
+
+					if self.lock_z:
+						new_h = start_size.height()
+
+						new_pos.setY(start_pos.y())
 
 					if QApplication.keyboardModifiers() & Qt.ShiftModifier:
 						g = self.view.base_grid * self.view.grid_scale
-						new_w = snap(new_w, g)
-						new_h = snap(new_h, g)
 
-					new_w = max(1, new_w)
-					new_h = max(1, new_h)
+						new_w = int(snap(new_w, g))
 
-					scale_x = new_w / start_size.width()
-					scale_y = new_h / start_size.height()
+						new_h = int(snap(new_h, g))
 
-					cursor_pos = QCursor.pos()
-					self.cursor_overlay.update_text(f"Width: {scale_x:.2f}x | Height: {scale_y:.2f}x", cursor_pos)
+					new_w = max(1, int(new_w))
 
-					if self.lock_aspect:
-						aspect = start_size.width() / start_size.height()
-						new_h = int(new_w / aspect)
-					else:
-						if self.lock_x:
-							new_w = start_size.width()
-						if self.lock_z:
-							new_h = start_size.height()
+					new_h = max(1, int(new_h))
 
-					# Scale from pristine source to avoid cumulative resampling
-					pixmap = safe_scaled(item.original_pixmap, int(new_w), int(new_h))
+					item.setPos(new_pos)
+
+					pixmap = safe_scaled(
+
+						item.original_pixmap,
+
+						new_w,
+
+						new_h
+
+					)
+
 					item.setPixmap(pixmap)
-					# Apply tint to the currently displayed pixmap (preserve size)
-					# item.apply_tint()
 
-					self.settings_width_entry.setText(str(int(new_w)))
-					self.settings_height_entry.setText(str(int(new_h)))
+					self.settings_width_entry.setText(str(new_w))
+
+					self.settings_height_entry.setText(str(new_h))
+
+					scale_x = round(
+
+						new_w / max(1, start_size.width()),
+
+						3
+
+					)
+
+					scale_y = round(
+
+						new_h / max(1, start_size.height()),
+
+						3
+
+					)
+
+					self.cursor_overlay.update_text(
+
+						f"{new_w}px x {new_h}px | {scale_x}x / {scale_y}x",
+
+						event.globalPosition().toPoint()
+
+					)
 
 			return True
 
-		elif event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
-			if self.edit_mode:
-				# Build transform commands for any items that changed during the edit operation
-				try:
-					batch = BatchCommand("Transform Items")
-					for item, (old_pos, old_size) in list(self.start_item_states.items()):
-						new_pos = item.pos()
-						new_size = (item.pixmap().width(), item.pixmap().height())
-						try:
-							old_size_t = (old_size.width(), old_size.height())
-						except Exception:
-							old_size_t = (old_size[0], old_size[1]) if isinstance(old_size, (list, tuple)) else old_size
-						if (new_pos != old_pos) or (new_size != old_size_t):
-							cmd = TransformCommand(item, old_pos, old_size_t, new_pos, new_size,
-												   text = "Transform Item")
-							batch.add(cmd)
-					if batch.cmds:
-						self.allow_rebuild_ini = False
-						self.undo_stack.push(batch)
-				except Exception:
-					pass
+		elif self.edit_mode and self.edit_items and event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+			try:
+				self.finish_transform_batch("Transform Items")
+			except Exception:
+				pass
 
-				self.exit_edit_mode()
-				self.rebuild_ini()
-				return True
+			self.exit_edit_mode()
+			self.rebuild_ini()
+			return True
+
+		elif self.edit_mode and self.edit_items and event.type() == QEvent.MouseButtonPress and event.button() == Qt.RightButton:
+			self.restore_start_states()
+			self.exit_edit_mode()
+			return True
 
 		return super().eventFilter(obj, event)
 
@@ -10804,18 +11232,15 @@ class MenuEditor(QMainWindow):
 		self.lock_z = False
 		self.lock_aspect = False
 
-		# store current mouse position
-		self.start_pos = self.view.mapToScene(self.view.viewport().mapFromGlobal(QCursor.pos()))
+		self.edit_items = [
+			item for item in self.display_items
+			if item.name in [i.name for i in self.get_selected_display_items()]
+		]
+
+		self.resize_anchor = "br"
+		self.begin_transform_state()
 
 	def exit_edit_mode(self):
-		self.edit_items = [item for item in self.display_items if
-						   item.name in [i.name for i in self.get_selected_display_items()]]
-		self.start_item_states = {item: (item.pos(), item.pixmap().size()) for item in self.edit_items}
-		# store offset between mouse and each item
-		scene_pos = self.view.mapToScene(self.view.viewport().mapFromGlobal(QCursor.pos()))
-		self.start_pos = scene_pos
-		self.item_mouse_offsets = {item: item.pos() - scene_pos for item in self.edit_items}
-
 		self.lock_x = False
 		self.lock_z = False
 		self.lock_aspect = False
@@ -10823,8 +11248,11 @@ class MenuEditor(QMainWindow):
 
 		self.view.show_grid = False
 		self.view.viewport().update()
-
 		self.cursor_overlay.hide()
+
+		self.start_scene_pos = None
+		self.start_mouse_global = None
+		self.start_item_states = {}
 
 	# ---------------- Utility Functions ----------------
 	def scene_to_screen(self, scene_pos):
@@ -10879,7 +11307,6 @@ class MenuEditor(QMainWindow):
 		if not item:
 			return
 
-		# ---- find corresponding outliner item ----
 		tree_item = None
 		for it in self.iter_outliner_items():
 			if it.data(1, Qt.UserRole) is item:
@@ -10890,86 +11317,74 @@ class MenuEditor(QMainWindow):
 
 		batch = BatchCommand("Apply Changes")
 
-		# ---- Name change ----
 		item_new_name = self.settings_name_entry.text().strip() or item.name
 		if item_new_name != item.name:
-			cmd_name = PropertyCommand(item, "name", item.name, item_new_name, text = "Rename Item")
-			batch.add(cmd_name)
+			batch.add(PropertyCommand(item, "name", item.name, item_new_name, text = "Rename Item"))
 
-		# ---- Type Change ----
-		new_type = self.settings_type_name.currentText() or 'Visual'
+		new_type = self.settings_type_name.currentText() or "Visual"
 		if new_type != item.type_name:
-			cmd_name = PropertyCommand(item, "type_name", item.type_name, new_type, text = "Change Type")
-			batch.add(cmd_name)
+			batch.add(PropertyCommand(item, "type_name", item.type_name, new_type, text = "Change Type"))
 
-		# ---- Toggles amount change ----
 		try:
-			new_toggles = int(self.settings_toggles_amount.text())
-			new_toggles = max(1, new_toggles)
+			new_toggles = max(1, int(self.settings_toggles_amount.text()))
 		except Exception:
 			new_toggles = None
 
 		if new_toggles is not None:
 			old_toggles = getattr(item, "toggles_amount", 0)
-
 			if new_toggles != old_toggles:
-				cmd_toggles = PropertyCommand(
-					item,
-					"toggles_amount",
-					old_toggles,
-					new_toggles,
-					text = "Change Toggles Amount"
+				batch.add(
+					PropertyCommand(
+						item,
+						"toggles_amount",
+						old_toggles,
+						new_toggles,
+						text = "Change Toggles Amount"
+					)
 				)
-				batch.add(cmd_toggles)
 
-		# ---- Size change ----
 		try:
-			w = int(self.settings_width_entry.text())
-			h = int(self.settings_height_entry.text())
-			w = max(1, w)
-			h = max(1, h)
-		except Exception:
-			w = None
-			h = None
-
-		old_pos = item.pos()
-		old_size = (item.pixmap().width(), item.pixmap().height())
-		new_pos = old_pos
-		new_size = old_size
-
-		if w and h:
+			w = max(1, int(self.settings_width_entry.text()))
+			h = max(1, int(self.settings_height_entry.text()))
 			new_size = (w, h)
+		except Exception:
+			new_size = (item.pixmap().width(), item.pixmap().height())
 
-		# ---- Position change (screen → scene) ----
+		old_pos = QPointF(item.pos())
+		new_pos = QPointF(old_pos)
+
 		try:
-			x_screen = int(self.settings_pos_x_entry.text())
-			y_screen = int(self.settings_pos_y_entry.text())
-			scene_point = self.screen_to_scene(QPoint(x_screen, y_screen))
-			new_pos = QPointF(scene_point.x(), scene_point.y())
+			x = float(self.settings_pos_x_entry.text().strip())
+			y = float(self.settings_pos_y_entry.text().strip())
+			new_pos = QPointF(x, y)
 		except Exception:
 			pass
 
-		if new_pos != old_pos or new_size != old_size:
-			cmd_tf = TransformCommand(item, old_pos, old_size, new_pos, new_size, text = "Apply Transform")
-			batch.add(cmd_tf)
+		if new_pos != old_pos or new_size != (item.pixmap().width(), item.pixmap().height()):
+			batch.add(
+				TransformCommand(
+					item,
+					old_pos,
+					(item.pixmap().width(), item.pixmap().height()),
+					new_pos,
+					new_size,
+					text = "Apply Transform"
+				)
+			)
 
-		# ---- Parent Change ----
 		try:
-			new_parent = str(self.parent_select.currentText())
+			new_parent = str(self.parent_select.currentText()) or None
 		except Exception:
 			new_parent = None
 
 		old_parent = item.parent_item or None
-
 		if new_parent != old_parent:
-			cmd_tf = PropertyCommand(item, "parent_item", item.parent_item, new_parent, text = "Change Parent")
-			batch.add(cmd_tf)
+			batch.add(PropertyCommand(item, "parent_item", item.parent_item, new_parent, text = "Change Parent"))
 
 		if batch.cmds:
 			try:
 				self.undo_stack.push(batch)
 			except Exception:
-				# fallback: apply directly
 				for c in batch.cmds:
 					c.redo()
 
@@ -11182,37 +11597,39 @@ class MenuEditor(QMainWindow):
 			return
 
 		self._ui_changing = True
+		try:
+			self.settings_panel.setVisible(True)
+			self.settings_name_entry.setText(item.name)
+			self.settings_toggles_amount.setText(str(item.toggles_amount))
+			self.settings_width_entry.setText(str(item.pixmap().width()))
+			self.settings_height_entry.setText(str(item.pixmap().height()))
+			self.settings_type_name.setCurrentText(item.type_name if item.type_name else "Visual")
 
-		self.settings_panel.setVisible(True)
-		self.settings_name_entry.setText(item.name)
-		self.settings_toggles_amount.setText(str(item.toggles_amount))
-		self.settings_width_entry.setText(str(item.pixmap().width()))
-		self.settings_type_name.setCurrentText(item.type_name if item.type_name else 'Visual')
-		self.settings_height_entry.setText(str(item.pixmap().height()))
-		parent_names = [""] + [i.name for i in self.display_items if i != item]
-		self.parent_select.clear()
-		self.parent_select.addItems(parent_names)
-		self.parent_select.setCurrentText(item.parent_item if item.parent_item else '')
-		self.settings_tint_slider.setValue(item.tint_percent)
+			parent_names = [""] + [i.name for i in self.display_items if i != item]
+			self.parent_select.clear()
+			self.parent_select.addItems(parent_names)
+			self.parent_select.setCurrentText(item.parent_item if item.parent_item else "")
+			self.settings_tint_slider.setValue(item.tint_percent)
 
-		screen_point = self.scene_to_screen(item.pos())
-		self.settings_pos_x_entry.setText(str(int(screen_point.x())))
-		self.settings_pos_y_entry.setText(str(int(screen_point.y())))
+			# scene coords
+			pos = item.pos()
+			self.settings_pos_x_entry.setText(str(int(round(pos.x()))))
+			self.settings_pos_y_entry.setText(str(int(round(pos.y()))))
 
-		if item.parent_item:
-			parent = next((elem for elem in self.display_items if elem.name == item.parent_item), None)
-
-			if parent is None:
-				return
-
-			parent_screen = self.scene_to_screen(parent.pos())
-			self.parent_offset_x_entry.setText(str(int(screen_point.x() - parent_screen.x())))
-			self.parent_offset_y_entry.setText(str(int(screen_point.y() - parent_screen.y())))
-		else:
-			self.parent_offset_x_entry.setText(str(0))
-			self.parent_offset_y_entry.setText(str(0))
-
-		self._ui_changing = False
+			if item.parent_item:
+				parent = next((elem for elem in self.display_items if elem.name == item.parent_item), None)
+				if parent:
+					parent_pos = parent.pos()
+					self.parent_offset_x_entry.setText(str(int(round(pos.x() - parent_pos.x()))))
+					self.parent_offset_y_entry.setText(str(int(round(pos.y() - parent_pos.y()))))
+				else:
+					self.parent_offset_x_entry.setText("0")
+					self.parent_offset_y_entry.setText("0")
+			else:
+				self.parent_offset_x_entry.setText("0")
+				self.parent_offset_y_entry.setText("0")
+		finally:
+			self._ui_changing = False
 
 	def update_z_order(self, parent, start, end, destination, row):
 		for idx in range(self.outliner.topLevelItemCount()):
@@ -11673,10 +12090,10 @@ class MenuEditor(QMainWindow):
 
 	def save_snapshot(self, name=None, include=None):
 		"""
-        Save a minimal snapshot.
-        `name` = optional snapshot name
-        `include` = list of sections to include: "templates", "display_items", "code_elements", "types"
-        """
+		Save a minimal snapshot.
+		`name` = optional snapshot name
+		`include` = list of sections to include: "templates", "display_items", "code_elements", "types"
+		"""
 		include = include or ["templates", "display_items", "code_elements", "types", "pages", "groups"]
 
 		snap = {
@@ -11708,9 +12125,9 @@ class MenuEditor(QMainWindow):
 
 	def load_snapshot(self, name_or_path, restore=None):
 		"""
-        Load a snapshot file and return its data (dict).
-        If `restore` is a list of sections, perform the restore (compatibility mode).
-        """
+		Load a snapshot file and return its data (dict).
+		If `restore` is a list of sections, perform the restore (compatibility mode).
+		"""
 		self.loading_data = True
 
 		# try to resolve candidate filename(s)
@@ -11850,6 +12267,7 @@ CONFIG_PATH = "Saves/Config.json"
 
 DEFAULT_CONFIG = {
 	"version": VERSION,
+	"default_files_version": DEFAULT_FILES_VERSION,
 	"first_run": 1,
 	"platform_args": ["-platform", "windows:darkmode=2"],
 	"style": "Basic",
@@ -11949,11 +12367,11 @@ def apply_config(app, cfg):
 		app.setPalette(app.style().standardPalette())
 
 		app.setStyleSheet("""
-            QComboBox QAbstractItemView {
-                background-color: white;
-                color: black;
-            }
-        """)
+			QComboBox QAbstractItemView {
+				background-color: white;
+				color: black;
+			}
+		""")
 	else:
 		app.setPalette(QPalette())
 
@@ -11982,12 +12400,82 @@ def init_app(cfg):
 # ---------------- UPDATE MANAGER ----------------
 
 SUFFIX_PRIORITY = {
-	"hotfix": 4,
-	"": 3,
-    "b": 2,
-    "beta": 1,
-    "alpha": 0,
+	"HotFix": 3,
+	"": 2,
+	"B": 1,
+	"Beta": 1,
+	"A": 0,
+	"Alpha": 0,
 }
+
+
+def is_allowed_update_url(url: str, *, allowed_hosts: set[str] | None = None) -> bool:
+	url = (url or "").strip()
+	if not url:
+		return False
+
+	p = urlparse(url)
+
+	if p.scheme.lower() != "https":
+		return False
+
+	if allowed_hosts:
+		host = (p.netloc or "").split("@")[-1].split(":")[0].lower()
+		return host in {h.lower() for h in allowed_hosts}
+
+	return True
+
+
+
+def maybe_apply_update_from_cli() -> bool:
+	"""
+	Updater helper mode.
+	Uruchamiany jako:
+		program.exe --apply-update target staged
+	"""
+
+	if "--apply-update" not in sys.argv:
+		return False
+
+	idx = sys.argv.index("--apply-update")
+
+	if len(sys.argv) < idx + 3:
+		raise ValueError("Invalid --apply-update args")
+
+	target_path = os.path.abspath(sys.argv[idx + 1])
+	staged_path = os.path.abspath(sys.argv[idx + 2])
+	relaunch_args = sys.argv[idx + 3:]
+
+	# Wait until old process exits
+	for _ in range(120):
+		try:
+			with open(target_path, "ab"):
+				pass
+			break
+		except OSError:
+			time.sleep(0.5)
+	else:
+		raise TimeoutError("Target stayed locked too long")
+
+	backup_path = target_path + ".backup"
+
+	if os.path.exists(target_path) and not os.path.exists(backup_path):
+		shutil.copy2(target_path, backup_path)
+
+	os.replace(staged_path, target_path)
+
+	if getattr(sys, "frozen", False):
+		cmd = [target_path, *relaunch_args]
+	else:
+		cmd = [sys.executable, target_path, *relaunch_args]
+
+	subprocess.Popen(
+		cmd,
+		cwd = os.path.dirname(target_path) or None,
+		creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+	)
+
+	return True
 
 
 def parse_version_build(v: str):
@@ -12001,7 +12489,7 @@ def parse_version_build(v: str):
 		nums.append(0)
 
 	suffix = re.findall(r"[A-Za-z]+$", v)
-	suffix = suffix[0].lower() if suffix else ""
+	suffix = suffix[0] if suffix else ""
 
 	return (*nums, SUFFIX_PRIORITY.get(suffix, 3))
 
@@ -12025,27 +12513,44 @@ def assert_https(url: str) -> None:
 
 def verify_manifest_signature(manifest: dict) -> bool:
 	signature = (manifest.get("signature") or "").strip()
+
+	# FAIL CLOSED
 	if not signature:
-		return not UPDATE_REQUIRE_SIGNATURE
+		if UPDATE_REQUIRE_SIGNATURE:
+			raise ValueError("Unsigned manifest blocked")
+		return True
 
 	if not HAS_CRYPTO:
-		raise RuntimeError("Manifest signature present, but cryptography is not available")
+		raise RuntimeError("Manifest signature present but cryptography missing")
 
 	pubkey = (PUBLIC_KEY or "").strip()
-	if not pubkey or "TU_WKLEJ_PUBLIC_KEY" in pubkey:
-		raise RuntimeError("Manifest signature present, but PUBLIC_KEY is not configured")
+
+	if not pubkey:
+		raise RuntimeError("PUBLIC_KEY missing")
 
 	payload = dict(manifest)
 	payload.pop("signature", None)
-	data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+	data = json.dumps(
+		payload,
+		sort_keys = True,
+		separators = (",", ":")
+	).encode("utf-8")
 
 	try:
 		sig_bytes = base64.b64decode(signature)
 	except Exception as e:
-		raise ValueError(f"Invalid manifest signature encoding: {e}")
+		raise ValueError(f"Invalid signature encoding: {e}")
 
 	pub = serialization.load_pem_public_key(pubkey.encode("utf-8"))
-	pub.verify(sig_bytes, data, padding.PKCS1v15(), hashes.SHA256())
+
+	pub.verify(
+		sig_bytes,
+		data,
+		padding.PKCS1v15(),
+		hashes.SHA256(),
+	)
+
 	return True
 
 
@@ -12055,6 +12560,32 @@ def create_update_backup(target_path: str) -> str:
 	if os.path.exists(target_path):
 		shutil.copy2(target_path, backup_path)
 	return backup_path
+
+
+def create_data_backup(data_dir="Saves"):
+	os.makedirs(BACKUP_DIR, exist_ok=True)
+
+	timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+
+	zip_path = os.path.join(
+		BACKUP_DIR,
+		f"{timestamp}_DataBackup.zip"
+	)
+
+	files = [
+		"Defaults.json",
+		"Types.json",
+		"Templates.json"
+	]
+
+	with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+		for fname in files:
+			path = os.path.join(data_dir, fname)
+
+			if os.path.exists(path):
+				z.write(path, arcname=fname)
+
+	return zip_path
 
 
 def check_failed_update() -> None:
@@ -12067,22 +12598,22 @@ def check_failed_update() -> None:
 		if not os.path.exists(flag_path):
 			return
 
-		logger.warning("Previous update marked as failed.")
+		logger.warning("Previous Update Marked as failed.")
 
 		# Best-effort auto-restore for script/dev mode.
 		if os.path.exists(backup_path) and not getattr(sys, "frozen", False):
 			try:
 				shutil.copy2(backup_path, target_path)
-				logger.info("Restored backup after failed update.")
+				logger.info("Restored Backup after failed Update.")
 			except Exception as e:
-				logger.error(f"Backup restore failed: {e}")
+				logger.error(f"Backup Restore failed: {e}")
 
 		try:
 			os.remove(flag_path)
 		except Exception:
 			pass
 	except Exception as e:
-			logger.info(f"Failed-update check skipped: {e}")
+			logger.info(f"Failed-Update Check skipped: {e}")
 
 
 def fetch_json_url(url: str, timeout: int = 20) -> dict:
@@ -12104,7 +12635,7 @@ def build_public_manifest_url(cfg: dict, channel: str) -> str:
 	if not owner or not repo:
 		raise ValueError("GitHub Owner/Repo are not set in Settings")
 
-	return f"https://raw.githubusercontent.com/{owner}/{repo}/refs/heads/main/{manifest_path}/{branch}/Manifest.json"
+	return f"https://raw.githubusercontent.com/{owner}/{repo}/main/{manifest_path}/{branch}/Manifest.json"
 
 
 def current_install_target() -> str:
@@ -12115,21 +12646,44 @@ def current_install_target() -> str:
 	raise RuntimeError("Updater Disabled in Dev Mode")
 
 
-def download_file_with_progress(url: str, destination: str, progress_cb=None) -> str:
-	assert_https(url)
+def download_file_with_progress(url: str, destination: str, progress_cb = None,
+									max_bytes: int = MAX_UPDATE_SIZE_BYTES):
+
+	url = (url or "").strip()
+
+	if not is_allowed_update_url(url, allowed_hosts = ALLOWED_UPDATE_HOSTS):
+		raise ValueError(f"Blocked update URL: {url}")
+
 	os.makedirs(os.path.dirname(destination), exist_ok = True)
-	req = Request(url, headers = {"User-Agent": "MenuCreator-Updater/1.0"})
+
+	req = Request(url, headers = {
+		"User-Agent": "MenuCreator-Updater/1.0"
+	})
+
 	with urlopen(req, timeout = 60) as resp, open(destination, "wb") as out:
 		total = resp.headers.get("Content-Length")
 		total = int(total) if total and total.isdigit() else 0
+
+		if total and total > max_bytes:
+			raise ValueError(f"Update file too large: {total} bytes")
+
 		done = 0
 
 		while True:
 			chunk = resp.read(1024 * 256)
+
 			if not chunk:
 				break
-			out.write(chunk)
+
 			done += len(chunk)
+
+			if done > max_bytes:
+				raise ValueError(
+					f"Update exceeded limit ({max_bytes} bytes)"
+				)
+
+			out.write(chunk)
+
 			if progress_cb and total > 0:
 				try:
 					progress_cb(int(done * 100 / total))
@@ -12141,6 +12695,7 @@ def download_file_with_progress(url: str, destination: str, progress_cb=None) ->
 			progress_cb(100)
 		except Exception:
 			pass
+
 	return destination
 
 
@@ -12222,75 +12777,306 @@ def manifest_is_newer(local_build: dict, manifest: dict) -> bool:
 	return remote_version > local_build
 
 
-def install_staged_update(staged_path: str, target_path: str) -> str:
+def install_staged_update(staged_path: str,
+						 target_path: str,
+						 extra_args: list[str] | None = None) -> str:
+
 	target_path = os.path.abspath(target_path)
 	staged_path = os.path.abspath(staged_path)
+
+	extra_args = list(extra_args or [])
 
 	if not os.path.exists(staged_path):
 		raise FileNotFoundError(staged_path)
 
-	backup_path = target_path + ".backup"
-	if os.path.exists(target_path):
-		shutil.copy2(target_path, backup_path)
+	if not os.path.exists(target_path):
+		raise FileNotFoundError(target_path)
 
-	helper_path = os.path.join(tempfile.gettempdir(), "menu_creator_update_helper.bat")
-	flag_path = os.path.join(os.path.dirname(target_path), "update_failed.flag")
-
-	launcher = ""
 	if getattr(sys, "frozen", False):
-		launcher = f'start "" "{target_path}"'
+		launcher = [sys.executable]
 	else:
-		launcher = f'start "" "{sys.executable}" "{target_path}"'
+		launcher = [sys.executable, os.path.abspath(sys.argv[0])]
 
-	bat = f"""@echo off
-setlocal
-set "PID={os.getpid()}"
-set "TARGET={target_path}"
-set "SOURCE={staged_path}"
-set "FLAG={flag_path}"
+	helper_args = launcher + [
+		"--apply-update",
+		target_path,
+		staged_path,
+		*extra_args,
+	]
 
-:wait_loop
-tasklist /FI "PID eq %PID%" | find "%PID%" >nul
-if not errorlevel 1 (
-    timeout /t 1 /nobreak >nul
-    goto wait_loop
-)
+	subprocess.Popen(
+		helper_args,
+		cwd = os.path.dirname(target_path) or None,
+		creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+	)
 
-copy /Y "%SOURCE%" "%TARGET%" >nul
-if errorlevel 1 (
-    echo failed>"%FLAG%"
-) else (
-    if exist "%FLAG%" del "%FLAG%" >nul 2>nul
-)
-{launcher}
-del "%~f0" >nul 2>nul
-"""
+	return " ".join(helper_args)
 
-	with open(helper_path, "w", encoding = "utf-8", newline = "\r\n") as f:
-		f.write(bat)
 
-	subprocess.Popen(["cmd.exe", "/c", helper_path],
-					 creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0)
-	return helper_path
+# ---------------- DATA UPDATE HELPERS ----------------
+
+def load_json_file(path, default):
+	if not os.path.exists(path):
+		return deepcopy(default)
+	with open(path, "r", encoding="utf-8") as f:
+		return json.load(f)
+
+
+def load_json_any_file(path, default):
+	if not os.path.exists(path):
+		return deepcopy(default)
+	with open(path, "r", encoding="utf-8") as f:
+		return json.load(f)
+
+
+def save_json_file(path, data):
+	folder = os.path.dirname(path)
+	if folder:
+		os.makedirs(folder, exist_ok=True)
+	with open(path, "w", encoding="utf-8", newline="\n") as f:
+		json.dump(data, f, indent=4, ensure_ascii=False)
+
+
+def backup_file(path):
+	if os.path.exists(path):
+		shutil.copy2(path, path + ".backup")
+
+
+def build_public_data_file_url(cfg: dict, channel: str, filename: str) -> str:
+	owner = (cfg.get("update_owner") or "").strip()
+	repo = (cfg.get("update_repo") or "").strip()
+
+	data_root = (cfg.get("update_data_path") or "Data").strip().lstrip("/")
+	branch = (cfg.get(f"update_{channel}_branch") or channel).strip()
+
+	if not owner or not repo:
+		raise ValueError("GitHub Owner/Repo are not set in Settings")
+
+	return f"https://raw.githubusercontent.com/{owner}/{repo}/main/{data_root}/{branch}/{filename}"
+
+
+def data_files_are_newer(cfg: dict, manifest: dict) -> bool:
+	local_v = parse_version_build(str(cfg.get("default_files_version", "")))
+	remote_v = parse_version_build(str(manifest.get("default_files_version", "")))
+	return remote_v > local_v
+
+
+def refresh_modified_by_user_flags(types_data: dict, old_defaults: dict) -> dict:
+	old_defaults = old_defaults if isinstance(old_defaults, dict) else {}
+
+	for t in types_data.get("types", []):
+		if not isinstance(t, dict):
+			continue
+
+		name = t.get("name")
+		if not name:
+			continue
+
+		if not t.get("is_default", False):
+			t["modified_by_user"] = False
+			continue
+
+		old_default_code = old_defaults.get(name)
+		if old_default_code is None:
+			t["modified_by_user"] = False
+		else:
+			t["modified_by_user"] = (t.get("ini_code", "") != old_default_code)
+
+	return types_data
+
+
+def apply_types_update(old_types_data: dict, old_defaults: dict, new_types_data: dict) -> dict:
+	"""
+	Rules:
+	- user types (is_default == False): untouched
+	- default types with modified_by_user == True: untouched
+	- default types without user modifications: overwritten by new default version
+	- new types by name: appended
+	- nothing is deleted
+	"""
+	old_types_data = deepcopy(old_types_data or {"version": 1, "types": []})
+	new_types_data = deepcopy(new_types_data or {"version": 1, "types": []})
+
+	old_types_data = refresh_modified_by_user_flags(old_types_data, old_defaults)
+
+	current_map = {}
+	for t in old_types_data.get("types", []):
+		if isinstance(t, dict) and t.get("name"):
+			current_map[t["name"]] = t
+
+	for new_t in new_types_data.get("types", []):
+		if not isinstance(new_t, dict):
+			continue
+
+		name = new_t.get("name")
+		if not name:
+			continue
+
+		if name not in current_map:
+			added = deepcopy(new_t)
+			added.setdefault("is_default", True)
+			added.setdefault("modified_by_user", False)
+			current_map[name] = added
+			continue
+
+		cur_t = current_map[name]
+
+		if not cur_t.get("is_default", False):
+			continue
+
+		if cur_t.get("modified_by_user", False):
+			continue
+
+		merged = deepcopy(new_t)
+		merged["is_default"] = True
+		merged["modified_by_user"] = False
+		current_map[name] = merged
+
+	return {
+		"version": new_types_data.get("version", old_types_data.get("version", 1)),
+		"types": list(current_map.values())
+	}
+
+
+def apply_templates_update(old_templates: list, new_templates: list) -> list:
+	"""
+	Rules:
+	- only add missing entries by name
+	- never modify existing entries
+	- never remove anything
+	"""
+	old_templates = deepcopy(old_templates or [])
+	new_templates = new_templates or []
+
+	existing_names = {
+		t.get("name")
+		for t in old_templates
+		if isinstance(t, dict) and t.get("name")
+	}
+
+	for t in new_templates:
+		if not isinstance(t, dict):
+			continue
+
+		name = t.get("name")
+		if not name:
+			continue
+
+		if name not in existing_names:
+			old_templates.append(deepcopy(t))
+			existing_names.add(name)
+
+	return old_templates
+
+
+def apply_defaults_update(new_defaults: dict) -> dict:
+	return deepcopy(new_defaults or {})
+
+
+def apply_data_update(cfg: dict, manifest: dict) -> bool:
+	if not data_files_are_newer(cfg, manifest):
+		return False
+
+	channel = (cfg.get("update_channel", "Main") or "Main").strip()
+	if channel not in UPDATE_CHANNELS:
+		channel = "Main"
+
+	base_dir = (cfg.get("data_path") or "").strip()
+	if not base_dir:
+		base_dir = os.path.join(os.path.dirname(current_install_target()), "Data")
+
+	defaults_path = os.path.join(base_dir, "Defaults.json")
+	types_path = os.path.join(base_dir, "Types.json")
+	templates_path = os.path.join(base_dir, "Templates.json")
+
+	old_defaults = load_json_file(defaults_path, {})
+	old_types = load_json_file(types_path, {"version": 1, "types": []})
+	old_templates = load_json_any_file(templates_path, [])
+
+	defaults_url = build_public_data_file_url(cfg, channel, "Defaults.json")
+	types_url = build_public_data_file_url(cfg, channel, "Types.json")
+	templates_url = build_public_data_file_url(cfg, channel, "Templates.json")
+
+	new_defaults = fetch_json_url(defaults_url)
+	new_types = fetch_json_url(types_url)
+	new_templates = load_json_any_file_from_url(templates_url)
+
+	backup_file(defaults_path)
+	backup_file(types_path)
+	backup_file(templates_path)
+
+	final_defaults = apply_defaults_update(new_defaults)
+	final_types = apply_types_update(old_types, old_defaults, new_types)
+	final_templates = apply_templates_update(old_templates, new_templates)
+
+	save_json_file(defaults_path, final_defaults)
+	save_json_file(types_path, final_types)
+	save_json_file(templates_path, final_templates)
+
+	cfg["default_files_version"] = str(manifest.get("default_files_version", DEFAULT_FILES_VERSION))
+
+	try:
+		save_config(cfg)
+	except Exception as e:
+		logger.warning(f"Failed to Save Config after Data Update: {e}")
+
+	return True
+
+
+def load_json_any_file_from_url(url: str, timeout: int = 20):
+	req = Request(url, headers={"User-Agent": "MenuCreator-Updater/1.0"})
+	with urlopen(req, timeout=timeout) as resp:
+		payload = resp.read().decode("utf-8")
+	data = json.loads(payload)
+	return data
 
 
 def auto_check_updates_on_startup(parent, cfg):
+	cleanup_updater_temp()
+
 	if not cfg.get("update_auto_check"):
 		return
 
 	try:
 		manifest, _ = fetch_update_manifest(cfg, cfg.get("update_channel", "Main"))
+
+		# EXE update check
 		if manifest_is_newer(parse_version_build(VERSION), manifest):
 			remote_version = manifest.get("version", "unknown")
-
 			QMessageBox.information(
 				parent,
 				"Update Available",
-				f"An Update is Available on Startup: {remote_version}"
+				f"An Update is Available: {remote_version}\nHead to the Setting Window to Proceed"
 			)
+
+		# DATA update check
+		if data_files_are_newer(cfg, manifest):
+			try:
+				backup = create_data_backup()
+
+				logger.info(f"Created Data Backup: {backup}")
+
+				apply_data_update(cfg, manifest)
+				logger.info(
+					f"Data files updated to {manifest.get('default_files_version', 'unknown')}"
+				)
+			except Exception as e:
+				logger.error(f"Data update failed: {e}")
+
 	except Exception as e:
 		logger.info(f"Startup Update Check skipped/failed: {e}")
 
+
+def cleanup_updater_temp():
+	base = tempfile.gettempdir()
+
+	file_path = os.path.join(base, "MenuCreatorUpdates", "MCreatorV2.exe")
+
+	try:
+		if os.path.exists(file_path):
+			os.remove(file_path)
+	except Exception:
+		pass
 
 # ---------------- SETTINGS DIALOG ----------------
 
@@ -12389,17 +13175,17 @@ class SettingsDialog(QDialog):
 		self.update_private_code.setEchoMode(QLineEdit.Password)
 		update_layout.addRow("Private Code:", self.update_private_code)
 
-		self.update_auto_check = QCheckBox("Check updates on startup")
+		self.update_auto_check = QCheckBox("Check Updates on Start-Up")
 		self.update_auto_check.setChecked(cfg.get("update_auto_check", False))
 		update_layout.addRow("Auto Check:", self.update_auto_check)
 
-		self.update_status = QLabel("No update check yet.")
+		self.update_status = QLabel("No Update Check yet.")
 		self.update_status.setWordWrap(True)
 		update_layout.addRow("Status:", self.update_status)
 
 		update_btn_row = QHBoxLayout()
 		self.btn_check_update = QPushButton("Check Now")
-		self.btn_install_update = QPushButton("Download / Install")
+		self.btn_install_update = QPushButton("Download")
 		self.btn_check_update.clicked.connect(self.on_check_update)
 		self.btn_install_update.clicked.connect(self.on_install_update)
 		update_btn_row.addWidget(self.btn_check_update)
@@ -12520,17 +13306,27 @@ class SettingsDialog(QDialog):
 																			self.cfg.get("update_channel", "Main"))
 				self.pending_update = manifest
 			except Exception as e:
-				QMessageBox.warning(self, "Update", f"Could not load manifest:\n{e}")
+				QMessageBox.warning(self, "Update", f"Could not load Manifest:\n{e}")
 				return
 
 		if not manifest_is_newer(parse_version_build(VERSION), manifest):
-			QMessageBox.information(self, "Update", "No newer build available.")
+			QMessageBox.information(self, "Update", "No Newer Build available.")
 			return
 
 		download_url = (manifest.get("download_url") or "").strip()
+
 		if not download_url:
-			QMessageBox.warning(self, "Update", "Manifest does not contain download_url.")
+			QMessageBox.warning(self, "Update", "Manifest does not contain Download_Url.")
 			return
+
+		if not is_allowed_update_url(download_url, allowed_hosts = ALLOWED_UPDATE_HOSTS):
+			QMessageBox.warning(
+				self,
+				"Update",
+				f"Blocked update URL:\n{download_url}"
+			)
+			return
+
 		assert_https(download_url)
 
 		target_name = os.path.basename(download_url.split("?")[0]) or "MenuCreator_update.bin"
@@ -12540,7 +13336,7 @@ class SettingsDialog(QDialog):
 		progress = QDialog(self)
 		progress.setWindowTitle("Downloading Update")
 		progress_layout = QVBoxLayout(progress)
-		progress_label = QLabel("Downloading update...")
+		progress_label = QLabel("Downloading Update...")
 		progress_bar = QProgressBar()
 		progress_bar.setRange(0, 100)
 		progress_layout.addWidget(progress_label)
@@ -12560,23 +13356,23 @@ class SettingsDialog(QDialog):
 			if expected_sha:
 				got_sha = sha256_file(staged_path).lower()
 				if got_sha != expected_sha:
-					raise ValueError(f"SHA256 mismatch: expected {expected_sha}, got {got_sha}")
+					raise ValueError(f"SHA256 mismatch: Expected {expected_sha}, got {got_sha}")
 
 			target_path = current_install_target()
 			create_update_backup(target_path)
 			install_staged_update(staged_path, target_path)
-			self.update_status.setText("Update downloaded. It will install after the app closes.")
+			self.update_status.setText("Update Downloaded. It will Install after the App closes.")
 			QMessageBox.information(
 				self,
 				"Update Ready",
-				"The update has been downloaded. Close the app to let the updater replace the file and restart it."
+				"The Update has been Downloaded. Close the App to let the Updater replace the File and Restart it."
 			)
 			self.accept()
 
 		except Exception as e:
 			progress.close()
 			QMessageBox.warning(self, "Update Failed", str(e))
-			self.update_status.setText(f"Download/install failed: {e}")
+			self.update_status.setText(f"Download/Install failed: {e}")
 			return
 		finally:
 			try:
@@ -12610,6 +13406,9 @@ def open_config_editor():
 
 if __name__ == "__main__":
 	editor = None
+
+	if maybe_apply_update_from_cli():
+		sys.exit(0)
 
 	cfg = load_config()
 	check_failed_update()

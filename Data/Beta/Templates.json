@@ -70,14 +70,5 @@
     "path": "",
     "tint_percent": 0,
     "extends": null
-  },
-  {
-    "name": "NewTestToggle",
-    "type": "Rectangle Toggle",
-    "width": 230,
-    "height": 345,
-    "path": "",
-    "tint_percent": 0,
-    "extends": null
   }
 ]

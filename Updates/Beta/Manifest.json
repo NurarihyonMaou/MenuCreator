@@ -1,8 +1,15 @@
 {
-  "version": "3.3.7.1B",
-  "download_url": "https://github.com/NurarihyonMaou/MenuCreator/releases/download/v3.3.7.1B/MCreatorV2.exe",
-  "sha256": "dbb5361e842e22a392367993e1434133be46e81cc41dec76e2616518e5581604",
+  "version": "4.0B",
+  "download_url": "https://github.com/NurarihyonMaou/MenuCreator/releases/download/v4.0B/MCreatorV2.exe",
+  "sha256": "f73bb4bbd361e85ffb1aa8eb450bfc11314d805f3b15d55dbfb88fb87a5532f5",
   "notes": [
-    "Test of the Updater"
-  ]
+    "Preview Mode (~) + Changes to Display Panel",
+    "Added Export of Tinted Images (F3)",
+    "Added Updating Data Files (Types/Defaults/Templates from Saves Folder)",
+    "Fixed some bugs",
+    "Re:Worked Texture-Block Handler",
+    "Probably something else"
+  ],
+  "default_files_version": 1.1,
+  "signature": "WtY9+vvsQUtOxQujCOMRvUcbWtHCC3l1R3xJYazpkD4bbDj8xeWUcoSAzdk7/j/BEX6uSlnEMsnblsuHOswccvnOWQuTvKdR5XQogXzkzReyVjqRLyTFBGweqrSix2bQJLVYS96C1AKgNjUGfS+eSqHLXx1YB0y+y5jysOsmHwtYsAGRyC7wn838N1TGvawnCUWQORTUeI99Bw+owr+zP3Ru6ezzmSFiyEloUuo6GAtnUYp7BvJIkOo20SoEpyGut88hYLTkUbQTF28QUPzg7W6lNxDQ4pmACSlxqRGn1wDvBU8HucbkJuVxR/P+lrIiNOBblXx0ScibVGR91ZaKd6DsiHAgA16GQGFUuvDSQz6xvXADhASr6KfVE+GfSsfPIjKK/2bnfFi2YTLbBAn0WBviYkSoeg5wGB/n+EyOaVbYI85MYA3xyBjoQX0MP0GmT8lMRhRRxrdJDpC2DvQGfO8DuSPbr9ZNNbeP7ig9ovrisvbaW2DGnvp5zUPoNRG7tNZaET9GgDHkVDOjUGhk/F+FKMHWh2QRG9ZEr0TLRL83fhaExGfIExEih1nAtTXGHMc9zJZ/gx4X+6xcjgPZ+B2w+0esXcY2oKCjqPPAjPyxkhwILu8Jl6S2d45wYIG3wlS3xlm+cTc+4jzGDUpwZXLSCb/2m5F1a9eUCICkS58="
 }
