@@ -1,5 +1,5 @@
 {
-  "version": 1.1,
+  "version": "1.2",
   "pages": [
     "Sliders",
     "Toggles"
@@ -356,8 +356,8 @@
       "tint_percent": 100,
       "parent_name": "Slider Cursor",
       "parent_offset": [
-        227.0,
-        24.0
+        0,
+        0
       ],
       "children_names": [],
       "template_name": null
@@ -420,8 +420,8 @@
       "tint_percent": 100,
       "parent_name": "MenuElementSliderCursor_1",
       "parent_offset": [
-        292.0,
-        12.0
+        0,
+        0
       ],
       "children_names": [],
       "template_name": null
