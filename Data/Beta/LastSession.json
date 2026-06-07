@@ -1,29 +1,29 @@
 {
-  "version": 1,
+  "version": 1.1,
   "pages": [
-    "1"
+    "Sliders",
+    "Toggles"
   ],
   "groups": {
     "ROOT_ALWAYS": [
       "Interactive"
     ],
-    "0": [
-      "Test"
-    ]
+    "0": [],
+    "1": []
   },
   "display_items": [
     {
       "name": "Anklet",
       "type_name": "Rectangle Toggle",
-      "always_visible": true,
-      "page_index": null,
-      "group": 0,
-      "z": 1.0,
+      "always_visible": false,
+      "page_index": 1,
+      "group": null,
+      "z": 6.0,
       "pixmap_path": "",
       "toggles_amount": 1,
       "pos": [
-        178,
-        292
+        704,
+        304
       ],
       "size": [
         72,
@@ -37,8 +37,8 @@
       "tint_percent": 100,
       "parent_name": "MenuBackground",
       "parent_offset": [
-        14,
-        128
+        0,
+        0
       ],
       "children_names": [],
       "template_name": null
@@ -46,15 +46,15 @@
     {
       "name": "BackBow",
       "type_name": "Rectangle Toggle",
-      "always_visible": true,
-      "page_index": null,
-      "group": 0,
-      "z": 2.0,
+      "always_visible": false,
+      "page_index": 1,
+      "group": null,
+      "z": 7.0,
       "pixmap_path": "",
       "toggles_amount": 1,
       "pos": [
-        458,
-        292
+        985,
+        304
       ],
       "size": [
         72,
@@ -68,8 +68,8 @@
       "tint_percent": 100,
       "parent_name": "MenuBackground",
       "parent_offset": [
-        294,
-        128
+        0,
+        0
       ],
       "children_names": [],
       "template_name": null
@@ -84,8 +84,8 @@
       "pixmap_path": "",
       "toggles_amount": 1,
       "pos": [
-        163,
-        164
+        688,
+        176
       ],
       "size": [
         400,
@@ -117,15 +117,15 @@
     {
       "name": "BaseHeels",
       "type_name": "Rectangle Toggle",
-      "always_visible": true,
-      "page_index": null,
-      "group": 0,
-      "z": 3.0,
+      "always_visible": false,
+      "page_index": 1,
+      "group": null,
+      "z": 8.0,
       "pixmap_path": "",
       "toggles_amount": 1,
       "pos": [
-        178,
-        593
+        704,
+        605
       ],
       "size": [
         72,
@@ -139,8 +139,8 @@
       "tint_percent": 100,
       "parent_name": "MenuBackground",
       "parent_offset": [
-        14,
-        429
+        0,
+        0
       ],
       "children_names": [],
       "template_name": null
@@ -148,15 +148,15 @@
     {
       "name": "MenuElementRT_3",
       "type_name": "Rectangle Toggle",
-      "always_visible": true,
-      "page_index": null,
-      "group": 0,
-      "z": 4.0,
+      "always_visible": false,
+      "page_index": 1,
+      "group": null,
+      "z": 9.0,
       "pixmap_path": "",
       "toggles_amount": 1,
       "pos": [
-        458,
-        593
+        985,
+        605
       ],
       "size": [
         72,
@@ -170,8 +170,8 @@
       "tint_percent": 100,
       "parent_name": "MenuBackground",
       "parent_offset": [
-        294,
-        429
+        0,
+        0
       ],
       "children_names": [],
       "template_name": null
@@ -179,15 +179,15 @@
     {
       "name": "MenuElementRT_4",
       "type_name": "Rectangle Toggle",
-      "always_visible": true,
-      "page_index": null,
-      "group": 0,
-      "z": 7.0,
+      "always_visible": false,
+      "page_index": 1,
+      "group": null,
+      "z": 11.0,
       "pixmap_path": "",
       "toggles_amount": 1,
       "pos": [
-        273,
-        292
+        800,
+        304
       ],
       "size": [
         72,
@@ -201,8 +201,8 @@
       "tint_percent": 100,
       "parent_name": "MenuBackground",
       "parent_offset": [
-        109,
-        128
+        0,
+        0
       ],
       "children_names": [],
       "template_name": null
@@ -210,15 +210,15 @@
     {
       "name": "MenuElementRT_5",
       "type_name": "Rectangle Toggle",
-      "always_visible": true,
-      "page_index": null,
-      "group": 0,
-      "z": 9.0,
+      "always_visible": false,
+      "page_index": 1,
+      "group": null,
+      "z": 12.0,
       "pixmap_path": "",
       "toggles_amount": 1,
       "pos": [
-        273,
-        593
+        800,
+        605
       ],
       "size": [
         72,
@@ -232,8 +232,8 @@
       "tint_percent": 100,
       "parent_name": "MenuBackground",
       "parent_offset": [
-        109,
-        429
+        0,
+        0
       ],
       "children_names": [],
       "template_name": null
@@ -241,15 +241,15 @@
     {
       "name": "MenuElementRT_6",
       "type_name": "Rectangle Toggle",
-      "always_visible": true,
-      "page_index": null,
-      "group": 0,
-      "z": 10.0,
+      "always_visible": false,
+      "page_index": 1,
+      "group": null,
+      "z": 13.0,
       "pixmap_path": "",
       "toggles_amount": 1,
       "pos": [
-        365,
-        593
+        892,
+        605
       ],
       "size": [
         72,
@@ -263,8 +263,8 @@
       "tint_percent": 100,
       "parent_name": "MenuBackground",
       "parent_offset": [
-        201,
-        429
+        0,
+        0
       ],
       "children_names": [],
       "template_name": null
@@ -272,15 +272,15 @@
     {
       "name": "MenuElementRT_7",
       "type_name": "Rectangle Toggle",
-      "always_visible": true,
-      "page_index": null,
-      "group": 0,
-      "z": 5.0,
+      "always_visible": false,
+      "page_index": 1,
+      "group": null,
+      "z": 10.0,
       "pixmap_path": "",
       "toggles_amount": 4,
       "pos": [
-        369,
-        292
+        896,
+        304
       ],
       "size": [
         72,
@@ -294,8 +294,8 @@
       "tint_percent": 100,
       "parent_name": "MenuBackground",
       "parent_offset": [
-        205,
-        128
+        0,
+        0
       ],
       "children_names": [],
       "template_name": null
@@ -305,13 +305,13 @@
       "type_name": "Drag Zone",
       "always_visible": true,
       "page_index": null,
-      "group": null,
-      "z": 14.0,
+      "group": 0,
+      "z": 1.0,
       "pixmap_path": "",
       "toggles_amount": 1,
       "pos": [
-        163,
-        164
+        688,
+        176
       ],
       "size": [
         400,
@@ -332,17 +332,17 @@
       "template_name": null
     },
     {
-      "name": "Booba Slider",
+      "name": "Slider",
       "type_name": "ShapeKey Slider",
-      "always_visible": true,
-      "page_index": null,
-      "group": 0,
-      "z": 6.0,
+      "always_visible": false,
+      "page_index": 0,
+      "group": null,
+      "z": 3.0,
       "pixmap_path": "",
       "toggles_amount": 1,
       "pos": [
-        181,
-        436
+        707,
+        448
       ],
       "size": [
         360,
@@ -354,26 +354,26 @@
         101
       ],
       "tint_percent": 100,
-      "parent_name": "MenuElementSliderCursor",
+      "parent_name": "Slider Cursor",
       "parent_offset": [
-        12,
-        8
+        227.0,
+        24.0
       ],
       "children_names": [],
       "template_name": null
     },
     {
-      "name": "MenuElementSliderCursor",
+      "name": "Slider Cursor",
       "type_name": "Slider Cursor",
-      "always_visible": true,
-      "page_index": null,
-      "group": 0,
-      "z": 8.0,
+      "always_visible": false,
+      "page_index": 0,
+      "group": null,
+      "z": 5.0,
       "pixmap_path": "",
       "toggles_amount": 1,
       "pos": [
-        168,
-        428
+        693,
+        440
       ],
       "size": [
         42,
@@ -391,22 +391,22 @@
         0
       ],
       "children_names": [
-        "Booba Slider"
+        "Slider"
       ],
       "template_name": null
     },
     {
       "name": "MenuElementSlider_1",
       "type_name": "ShapeKey Slider",
-      "always_visible": true,
-      "page_index": null,
-      "group": 0,
-      "z": 11.0,
+      "always_visible": false,
+      "page_index": 0,
+      "group": null,
+      "z": 2.0,
       "pixmap_path": "",
       "toggles_amount": 1,
       "pos": [
-        181,
-        509
+        707,
+        521
       ],
       "size": [
         360,
@@ -420,8 +420,8 @@
       "tint_percent": 100,
       "parent_name": "MenuElementSliderCursor_1",
       "parent_offset": [
-        12,
-        9
+        292.0,
+        12.0
       ],
       "children_names": [],
       "template_name": null
@@ -429,15 +429,15 @@
     {
       "name": "MenuElementSliderCursor_1",
       "type_name": "Slider Cursor",
-      "always_visible": true,
-      "page_index": null,
-      "group": 0,
-      "z": 12.0,
+      "always_visible": false,
+      "page_index": 0,
+      "group": null,
+      "z": 4.0,
       "pixmap_path": "",
       "toggles_amount": 1,
       "pos": [
-        168,
-        500
+        693,
+        512
       ],
       "size": [
         42,
@@ -462,50 +462,19 @@
     {
       "name": "CustomShapedToggle",
       "type_name": "Custom Shaped Toggle",
-      "always_visible": true,
-      "page_index": null,
-      "group": 0,
-      "z": 13.0,
+      "always_visible": false,
+      "page_index": 1,
+      "group": null,
+      "z": 14.0,
       "pixmap_path": "",
       "toggles_amount": 3,
       "pos": [
-        291,
-        686
+        816,
+        698
       ],
       "size": [
         122,
         64
-      ],
-      "tint_color": [
-        255,
-        255,
-        255
-      ],
-      "tint_percent": 0,
-      "parent_name": null,
-      "parent_offset": [
-        0,
-        0
-      ],
-      "children_names": [],
-      "template_name": null
-    },
-    {
-      "name": "Kama1",
-      "type_name": "Rectangle Toggle",
-      "always_visible": true,
-      "page_index": null,
-      "group": null,
-      "z": 15.0,
-      "pixmap_path": "",
-      "toggles_amount": 1,
-      "pos": [
-        398,
-        492
-      ],
-      "size": [
-        72,
-        72
       ],
       "tint_color": [
         255,
@@ -599,18 +568,12 @@
       "type": "Enable Directional Toggles",
       "params": {},
       "ref_visual": null
-    },
-    {
-      "name": "",
-      "type": "Reset Toggles",
-      "params": {
-        "key": [
-          "0"
-        ]
-      },
-      "ref_visual": null
     }
   ],
   "ini": "",
-  "ifs": {}
+  "ifs": {
+    "__SESSION__": {
+      "__textures__": {}
+    }
+  }
 }
