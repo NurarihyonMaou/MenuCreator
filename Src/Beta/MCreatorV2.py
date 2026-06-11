@@ -13317,22 +13317,9 @@ def auto_check_updates_on_startup(parent, cfg):
 	except Exception as e:
 		editor.pending_update = None
 		editor.pending_manifest_url = ""
-		editor.update_status.setText(f"Update Check failed: {e}")
+		dlg.update_status.setText(f"Update Check failed: {e}")
 		QMessageBox.warning(parent, "Update Check Failed", str(e))
 		logger.info(f"Startup Update Check skipped/failed: {e}")
-		# DATA update check
-		#if data_files_are_newer(cfg, manifest):
-		#	try:
-		#		backup = create_data_backup()
-#
-		#		logger.info(f"Created Data Backup: {backup}")
-#
-		#		apply_data_update(cfg, manifest)
-		#		logger.info(
-		#			f"Data files updated to {manifest.get('default_files_version', 'unknown')}"
-		#		)
-		#	except Exception as e:
-		#		logger.error(f"Data update failed: {e}")
 
 
 def cleanup_updater_temp():
