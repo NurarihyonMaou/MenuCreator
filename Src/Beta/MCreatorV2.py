@@ -58,8 +58,11 @@ except Exception:
 	HAS_CRYPTO = False
 
 
-VERSION = "4.0B"
-DEFAULT_FILES_VERSION = 1.1
+APP_VERSION = "4.1B"
+APP_DEFAULT_FILES_VERSION = 1.2
+
+VERSION = ""
+DEFAULT_FILES_VERSION = 0.0
 
 UPDATE_CHANNELS = ("Main", "Beta")
 UPDATE_MANIFEST_PATH_DEFAULT = "Updates"
@@ -80,7 +83,7 @@ zk+cipZDe8a4GqCvzL5zw2k5Wcv1vsI/axppr1Y6X6wWNkxa+zp1XrlpqQyJHigq
 O2Xs99bPKg9/Is0ONJWPFJ2n0+fzi3nO6qb71pqLpZAFdHdA8hgP+PLkG4B8FO89
 Tg8oo/hWOLaUHmV2P9Yz8pcCAwEAAQ==
 -----END PUBLIC KEY-----"""
-# optional: put your PEM public key here if you enable signature checks
+
 UPDATE_REQUIRE_SIGNATURE = True
 ALLOW_DEV_UPDATES = os.environ.get("MENUCREATOR_ALLOW_DEV_UPDATES", "0") == "1"
 
@@ -88,6 +91,7 @@ MAX_UPDATE_SIZE_BYTES = 60 * 1024 * 1024
 
 ALLOWED_UPDATE_HOSTS = {
 	"raw.githubusercontent.com",
+	"github.com"
 }
 
 SAVE_DIR = "Saves"
@@ -135,7 +139,6 @@ CRASH_FILE = os.path.join(LOG_DIR, "Crash.log")
 
 os.makedirs(LOG_DIR, exist_ok = True)
 
-
 # =========================
 # LOGGER SETUP
 # =========================
@@ -144,40 +147,45 @@ class CrashHandler(logging.Handler):
 	def emit(self, record):
 		if record.levelno >= logging.ERROR:
 			try:
-				with open(CRASH_FILE, "a", encoding = "utf-8") as f:
+				with open(CRASH_FILE, "a", encoding="utf-8") as f:
 					f.write("\n" + "=" * 90 + "\n")
-					f.write(f"Time: {datetime.now()}\n")
+					f.write(f"Time: {datetime.now().isoformat(sep=' ', timespec='seconds')}\n")
 					f.write(self.format(record))
+					if record.exc_info:
+						f.write("\n")
+						f.write(logging.Formatter().formatException(record.exc_info))
 					f.write("\n")
-			except:
+			except Exception:
 				pass
 
 
 def setup_logger():
 	logger = logging.getLogger("app")
 	logger.setLevel(logging.DEBUG)
+	logger.propagate = False
+
+	# important: avoid duplicated logs if setup_logger() is called more than once
+	if logger.handlers:
+		logger.handlers.clear()
 
 	formatter = logging.Formatter(
 		"[%(asctime)s] [%(levelname)s] %(name)s: %(message)s",
-		datefmt = "%Y-%m-%d %H:%M:%S"
+		datefmt="%Y-%m-%d %H:%M:%S"
 	)
 
-	# main file (rotating)
 	file_handler = RotatingFileHandler(
 		LOG_FILE,
-		maxBytes = 5 * 1024 * 1024,
-		backupCount = 3,
-		encoding = "utf-8"
+		maxBytes=5 * 1024 * 1024,
+		backupCount=3,
+		encoding="utf-8"
 	)
 	file_handler.setLevel(logging.DEBUG)
 	file_handler.setFormatter(formatter)
 
-	# console
 	console = logging.StreamHandler(sys.stdout)
 	console.setLevel(logging.INFO)
 	console.setFormatter(formatter)
 
-	# crash log
 	crash_handler = CrashHandler()
 	crash_handler.setLevel(logging.ERROR)
 	crash_handler.setFormatter(formatter)
@@ -185,6 +193,10 @@ def setup_logger():
 	logger.addHandler(file_handler)
 	logger.addHandler(console)
 	logger.addHandler(crash_handler)
+
+	logger.debug("Logger initialized")
+	logger.debug(f"LOG_FILE = {LOG_FILE}")
+	logger.debug(f"CRASH_FILE = {CRASH_FILE}")
 
 	return logger
 
@@ -271,7 +283,7 @@ class KeyBindingsManager:
 			"toggle_aspect": "C",
 			"cancel": "Esc",
 			"help": "F1",
-			"hide_ui": "``",
+			"hide_ui": "`",
 			"export_selected_images": "F3"
 		}
 
@@ -945,7 +957,7 @@ def _walk_attr_chain(cur, rest, allow_z=False):
 						(it for it in editor.scene.items() if getattr(it, "name", None) == cur.name),
 						cur
 					)
-					screen_pos = editor.scene_to_screen(real_item.pos())
+					screen_pos = real_item.pos()
 				except Exception:
 					real_item = cur
 					screen_pos = None
@@ -957,10 +969,10 @@ def _walk_attr_chain(cur, rest, allow_z=False):
 					cur = cur.pixmap().height()
 					continue
 				if attr == "offset_x":
-					cur = screen_pos.x() if screen_pos is not None else None
+					cur = int(screen_pos.x()) if screen_pos is not None else None
 					continue
 				if attr == "offset_y":
-					cur = screen_pos.y() if screen_pos is not None else None
+					cur = int(screen_pos.y()) if screen_pos is not None else None
 					continue
 				if "resource" in attr:
 					try:
@@ -2732,7 +2744,6 @@ class IniHighlighter(QSyntaxHighlighter):
 # ================= TYPES SYSTEM =================
 
 TYPES_FILE = os.path.join(SAVE_DIR, "Types.json")
-TYPES_VERSION = 1
 
 
 class CodeElement:
@@ -3441,9 +3452,9 @@ class PlaceholderTable(QTableWidget):
 				line = line.replace("{element.height}", str(int(ref_el.pixmap().height())))
 
 			if "{element.offset_x}" in line:
-				line = line.replace("{element.offset_x}", str(editor.scene_to_screen(ref_el.pos()).x()))
+				line = line.replace("{element.offset_x}", str(int(ref_el.pos()).x()))
 			if "{element.offset_y}" in line:
-				line = line.replace("{element.offset_y}", str(editor.scene_to_screen(ref_el.pos()).y()))
+				line = line.replace("{element.offset_y}", str(int(ref_el.pos()).y()))
 
 			if "{element.parent_name}" in line:
 				line = line.replace("{element.parent_name}", str(ref_el.parent_item.replace(" ", "")))
@@ -4332,8 +4343,8 @@ class DisplayedItem(QGraphicsPixmapItem):
 					parent = next((elem for elem in (getattr(editor, "display_items", []) if editor else []) if
 								   elem.name == self.parent_item), None)
 					if parent:
-						#child_screen = editor.scene_to_screen(self.pos())
-						#parent_screen = editor.scene_to_screen(parent.pos())
+						#child_screen = int(self.pos())
+						#parent_screen = int(parent.pos())
 						self.parent_offset_x = self.pos().x() - parent.pos().x()
 						self.parent_offset_y = self.pos().y() - parent.pos().y()
 						if self.isSelected() and editor:
@@ -4599,9 +4610,9 @@ def expand_visual_ini(el, ini, debug=False):
 				elif hasattr(visual, "y"):
 					y_val = getattr(visual, "y")
 				if x_val is not None:
-					line = line.replace("{element.offset_x}", str(editor.scene_to_screen(visual.pos()).x()))
+					line = line.replace("{element.offset_x}", str(int(visual.pos()).x()))
 				if y_val is not None:
-					line = line.replace("{element.offset_y}", str(editor.scene_to_screen(visual.pos()).y()))
+					line = line.replace("{element.offset_y}", str(int(visual.pos()).y()))
 
 			except Exception:
 				pass
@@ -7997,7 +8008,7 @@ class MenuEditor(QMainWindow):
 		self.loading_data = False
 
 		self.auto_if = True
-
+		self.pending_update_install = None
 		# ---------------- UNDO/REDO ----------------
 		self.allow_rebuild_ini = True
 		self.allow_alert = True
@@ -10392,8 +10403,8 @@ class MenuEditor(QMainWindow):
 		def apply_visual_and_globals(line):
 			if visual:
 				line = line.replace("{element.name}", visual.name.replace(' ', ''))
-				line = line.replace("{element.offset_x}", str(editor.scene_to_screen(visual.pos()).x()))
-				line = line.replace("{element.offset_y}", str(editor.scene_to_screen(visual.pos()).y()))
+				line = line.replace("{element.offset_x}", str(int(visual.pos()).x()))
+				line = line.replace("{element.offset_y}", str(int(visual.pos()).y()))
 				line = line.replace("{element.width}", str(int(visual.pixmap().width())))
 				line = line.replace("{element.height}", str(int(visual.pixmap().height())))
 				line = line.replace("{element.resource}", ExtractResourceName(visual.pixmap_path).replace(' ', ''))
@@ -10535,7 +10546,8 @@ class MenuEditor(QMainWindow):
 			# existing single-line block expansion behavior (unchanged)
 			# match first {key} or {key.xN}
 			match = block_placeholder.search(line)
-			if match:
+
+			if match and match.group(1) not in ['{endfor}', '{continue}', '{skip}', '{EndLoop}', '{Loop:}']:
 				key = match.group(1)
 				raw_count_single = match.group(2)
 				values = param_list(key)
@@ -10732,16 +10744,16 @@ class MenuEditor(QMainWindow):
 					t.setdefault("kind", "Visual")
 		else:
 			self.types = [
-				{"name": "Visual", "ini_code": "", "kind": "Visual", "is_default": True},
-				{"name": "Slider", "ini_code": "[Constants]\n$Value = 0", "kind": "Code", "is_default": True},
-				{"name": "Toggle", "ini_code": "[Constants]\n$Enabled = 0", "kind": "Code", "is_default": True},
+				#{"name": "Visual", "ini_code": "", "kind": "Visual", "is_default": True},
+				#{"name": "Slider", "ini_code": "[Constants]\n$Value = 0", "kind": "Code", "is_default": True},
+				#{"name": "Toggle", "ini_code": "[Constants]\n$Enabled = 0", "kind": "Code", "is_default": True},
 			]
 			self.save_types()
 
 	def save_types(self):
 		with open(TYPES_FILE, "w", encoding = "utf-8") as f:
 			json.dump(
-				{"version": TYPES_VERSION, "types": self.types},
+				{"version": DEFAULT_FILES_VERSION, "types": self.types},
 				f,
 				indent = 2
 			)
@@ -11805,7 +11817,7 @@ class MenuEditor(QMainWindow):
 	def _build_save_data(self):
 
 		data = {
-			"version": 1,
+			"version": DEFAULT_FILES_VERSION,
 			"pages": list(self.pages),  # whatever shape you already store
 			"groups": self.serialize_groups_for_save(self.groups),
 			"display_items": [item.to_dict() for item in self.display_items if hasattr(item, "to_dict")],
@@ -12253,11 +12265,24 @@ class MenuEditor(QMainWindow):
 		try:
 			self.undo_stack.indexChanged.disconnect()
 			self.scene.selectionChanged.disconnect(self.on_scene_selection_changed)
+
 			self.save_last_session()
 			self.save_templates()
 			self.save_types()
+
+			pending = getattr(self, "pending_update_install", None)
+			if pending:
+				staged_path = pending.get("staged_path")
+				target_path = pending.get("target_path")
+				extra_args = pending.get("extra_args", [])
+
+				if staged_path and target_path:
+					install_staged_update(staged_path, target_path, extra_args)
+					self.pending_update_install = None
+
 		except Exception as e:
-			print("[ERROR] Save on exit failed:", e)
+			print("[ERROR] Save/update on exit failed:", e)
+
 		super().closeEvent(event)
 
 
@@ -12266,8 +12291,8 @@ CONFIG_PATH = "Saves/Config.json"
 # ---------------- DEFAULTS ----------------
 
 DEFAULT_CONFIG = {
-	"version": VERSION,
-	"default_files_version": DEFAULT_FILES_VERSION,
+	"version": APP_VERSION,
+	"default_files_version": APP_DEFAULT_FILES_VERSION,
 	"first_run": 1,
 	"platform_args": ["-platform", "windows:darkmode=2"],
 	"style": "Basic",
@@ -12286,7 +12311,7 @@ DEFAULT_CONFIG = {
 	"update_private_code": "",
 	"update_private_redeem_url": UPDATE_PRIVATE_REDEEM_URL_DEFAULT,
 	"update_private_manifest_url": UPDATE_PRIVATE_MANIFEST_URL_DEFAULT,
-	"update_auto_check": False
+	"update_auto_check": True
 }
 
 AVAILABLE_PLATFORM_ARGS = [
@@ -12300,10 +12325,17 @@ AVAILABLE_PLATFORM_ARGS = [
 # ---------------- CONFIG IO ----------------
 
 def load_config():
+	global VERSION
+	global DEFAULT_FILES_VERSION
+
 	os.makedirs("Saves", exist_ok = True)
 
 	if not os.path.exists(CONFIG_PATH):
 		save_config(DEFAULT_CONFIG)
+
+		VERSION = APP_VERSION
+		DEFAULT_FILES_VERSION = APP_DEFAULT_FILES_VERSION
+
 		return DEFAULT_CONFIG.copy()
 
 	try:
@@ -12312,13 +12344,19 @@ def load_config():
 
 		cfg = DEFAULT_CONFIG.copy()
 		cfg.update(data)
+
+		VERSION = cfg["version"]
+		DEFAULT_FILES_VERSION = cfg["default_files_version"]
+
 		return cfg
 	except:
+		VERSION = APP_VERSION
+		DEFAULT_FILES_VERSION = APP_DEFAULT_FILES_VERSION
 		return DEFAULT_CONFIG.copy()
 
 
 def save_config(cfg):
-	cfg["version"] = VERSION
+	#cfg["version"] = VERSION
 	cfg["first_run"] = 0
 
 	with open(CONFIG_PATH, "w", encoding = "utf-8") as f:
@@ -12422,58 +12460,6 @@ def is_allowed_update_url(url: str, *, allowed_hosts: set[str] | None = None) ->
 	if allowed_hosts:
 		host = (p.netloc or "").split("@")[-1].split(":")[0].lower()
 		return host in {h.lower() for h in allowed_hosts}
-
-	return True
-
-
-
-def maybe_apply_update_from_cli() -> bool:
-	"""
-	Updater helper mode.
-	Uruchamiany jako:
-		program.exe --apply-update target staged
-	"""
-
-	if "--apply-update" not in sys.argv:
-		return False
-
-	idx = sys.argv.index("--apply-update")
-
-	if len(sys.argv) < idx + 3:
-		raise ValueError("Invalid --apply-update args")
-
-	target_path = os.path.abspath(sys.argv[idx + 1])
-	staged_path = os.path.abspath(sys.argv[idx + 2])
-	relaunch_args = sys.argv[idx + 3:]
-
-	# Wait until old process exits
-	for _ in range(120):
-		try:
-			with open(target_path, "ab"):
-				pass
-			break
-		except OSError:
-			time.sleep(0.5)
-	else:
-		raise TimeoutError("Target stayed locked too long")
-
-	backup_path = target_path + ".backup"
-
-	if os.path.exists(target_path) and not os.path.exists(backup_path):
-		shutil.copy2(target_path, backup_path)
-
-	os.replace(staged_path, target_path)
-
-	if getattr(sys, "frozen", False):
-		cmd = [target_path, *relaunch_args]
-	else:
-		cmd = [sys.executable, target_path, *relaunch_args]
-
-	subprocess.Popen(
-		cmd,
-		cwd = os.path.dirname(target_path) or None,
-		creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
-	)
 
 	return True
 
@@ -12777,13 +12763,9 @@ def manifest_is_newer(local_build: dict, manifest: dict) -> bool:
 	return remote_version > local_build
 
 
-def install_staged_update(staged_path: str,
-						 target_path: str,
-						 extra_args: list[str] | None = None) -> str:
-
+def install_staged_update(staged_path: str, target_path: str, extra_args: list[str] | None = None) -> str:
 	target_path = os.path.abspath(target_path)
 	staged_path = os.path.abspath(staged_path)
-
 	extra_args = list(extra_args or [])
 
 	if not os.path.exists(staged_path):
@@ -12792,37 +12774,143 @@ def install_staged_update(staged_path: str,
 	if not os.path.exists(target_path):
 		raise FileNotFoundError(target_path)
 
-	if getattr(sys, "frozen", False):
-		launcher = [sys.executable]
-	else:
-		launcher = [sys.executable, os.path.abspath(sys.argv[0])]
+	target_dir = os.path.dirname(target_path)
+	target_name = os.path.basename(target_path)
 
-	helper_args = launcher + [
-		"--apply-update",
-		target_path,
-		staged_path,
-		*extra_args,
-	]
+	backup_path = target_path + ".backup"
+	if os.path.exists(target_path):
+		try:
+			shutil.copy2(target_path, backup_path)
+		except Exception:
+			pass
+
+	base = tempfile.gettempdir()
+	folder = os.path.join(base, "MenuCreatorUpdates")
+
+	helper_path = os.path.join(folder, "menu_creator_update_helper.bat")
+	log_path = os.path.join(folder, "menu_creator_update_log.txt")
+	flag_path = os.path.join(target_dir, "update_failed.flag")
+
+	frozen = getattr(sys, "frozen", False)
+	if frozen:
+		launch_cmd = f'start "" /D "{target_dir}" "{target_path}"'
+	else:
+		launch_cmd = f'start "" /D "{target_dir}" "{sys.executable}" "{target_path}"'
+
+	def esc(s: str) -> str:
+		return str(s).replace('"', '""')
+
+	relaunch = ""
+	if extra_args:
+		relaunch = " ".join(f'"{esc(a)}"' for a in extra_args)
+
+	bat = f"""@echo off
+setlocal EnableExtensions EnableDelayedExpansion
+
+set "TARGET={target_path}"
+set "TARGET_DIR={target_dir}"
+set "TARGET_NAME={target_name}"
+set "SOURCE={staged_path}"
+set "FLAG={flag_path}"
+set "LOG={log_path}"
+set "RELAUNCH={relaunch}"
+
+echo ==========================>>"%LOG%"
+echo UPDATE START>>"%LOG%"
+echo TIME: %date% %time%>>"%LOG%"
+echo SOURCE: %SOURCE%>>"%LOG%"
+echo TARGET: %TARGET%>>"%LOG%"
+echo TARGET_DIR: %TARGET_DIR%>>"%LOG%"
+
+echo Waiting for file unlock...>>"%LOG%"
+
+:wait_unlock
+(
+	copy /b "%TARGET%" nul >nul 2>&1
+) && goto unlocked
+
+timeout /t 1 /nobreak >nul
+goto wait_unlock
+
+:unlocked
+echo FILE UNLOCKED>>"%LOG%"
+
+echo Killing target if still running...>>"%LOG%"
+taskkill /F /IM "%TARGET_NAME%" >> "%LOG%" 2>&1
+
+echo Waiting for process to disappear...>>"%LOG%"
+:wait_dead
+tasklist /FI "IMAGENAME eq %TARGET_NAME%" | find /I "%TARGET_NAME%" >nul
+if not errorlevel 1 (
+	timeout /t 1 /nobreak >nul
+	goto wait_dead
+)
+
+echo Process gone. Waiting a bit more for file release...>>"%LOG%"
+timeout /t 2 /nobreak >nul
+
+set "COPIED="
+set RETRIES=10
+
+:copy_loop
+echo COPY TRY !RETRIES!>>"%LOG%"
+copy /Y "%SOURCE%" "%TARGET%" >> "%LOG%" 2>&1
+
+if not errorlevel 1 (
+	set "COPIED=1"
+	goto copy_ok
+)
+
+echo COPY FAILED - RETRYING>>"%LOG%"
+set /a RETRIES-=1
+if !RETRIES! LEQ 0 goto copy_fail
+
+timeout /t 1 /nobreak >nul
+goto copy_loop
+
+:copy_ok
+echo COPY SUCCESS>>"%LOG%"
+if exist "%FLAG%" del "%FLAG%" >nul 2>&1
+goto launch
+
+:copy_fail
+echo COPY FAILED>>"%LOG%"
+echo failed>"%FLAG%"
+goto end
+
+:launch
+echo LAUNCHING APP>>"%LOG%"
+cd /d "%TARGET_DIR%"
+
+{launch_cmd}
+
+timeout /t 2 /nobreak >nul
+tasklist /FI "IMAGENAME eq %TARGET_NAME%" | find /I "%TARGET_NAME%" >nul
+if errorlevel 1 (
+	echo LAUNCH FAILED (NOT RUNNING AFTER START)>>"%LOG%"
+) else (
+	echo LAUNCH OK>>"%LOG%"
+)
+
+:end
+echo CLEANUP>>"%LOG%"
+del "%~f0" >nul 2>nul
+"""
+
+	with open(helper_path, "w", encoding="utf-8", newline="\r\n") as f:
+		f.write(bat)
 
 	subprocess.Popen(
-		helper_args,
-		cwd = os.path.dirname(target_path) or None,
-		creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0,
+		["cmd.exe", "/c", helper_path],
+		creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
 	)
 
-	return " ".join(helper_args)
+	return helper_path
 
 
 # ---------------- DATA UPDATE HELPERS ----------------
 
 def load_json_file(path, default):
-	if not os.path.exists(path):
-		return deepcopy(default)
-	with open(path, "r", encoding="utf-8") as f:
-		return json.load(f)
-
-
-def load_json_any_file(path, default):
 	if not os.path.exists(path):
 		return deepcopy(default)
 	with open(path, "r", encoding="utf-8") as f:
@@ -12856,8 +12944,8 @@ def build_public_data_file_url(cfg: dict, channel: str, filename: str) -> str:
 
 
 def data_files_are_newer(cfg: dict, manifest: dict) -> bool:
-	local_v = parse_version_build(str(cfg.get("default_files_version", "")))
-	remote_v = parse_version_build(str(manifest.get("default_files_version", "")))
+	local_v = parse_version_build(str(cfg.get("default_files_version", DEFAULT_FILES_VERSION)))
+	remote_v = parse_version_build(str(manifest.get("default_files_version", DEFAULT_FILES_VERSION)))
 	return remote_v > local_v
 
 
@@ -12884,18 +12972,33 @@ def refresh_modified_by_user_flags(types_data: dict, old_defaults: dict) -> dict
 
 	return types_data
 
+import difflib
+
+def log_ini_diff(type_name: str, old_ini: str, new_ini: str, prefix: str = ""):
+	if old_ini == new_ini:
+		return
+
+	logger.debug(f"{prefix}[INI DIFF] {type_name}")
+
+	diff = difflib.unified_diff(
+		(old_ini or "").splitlines(),
+		(new_ini or "").splitlines(),
+		fromfile=f"{type_name}_OLD",
+		tofile=f"{type_name}_NEW",
+		lineterm=""
+	)
+
+	for line in diff:
+		logger.debug(f"{prefix}{line}")
 
 def apply_types_update(old_types_data: dict, old_defaults: dict, new_types_data: dict) -> dict:
-	"""
-	Rules:
-	- user types (is_default == False): untouched
-	- default types with modified_by_user == True: untouched
-	- default types without user modifications: overwritten by new default version
-	- new types by name: appended
-	- nothing is deleted
-	"""
+	logger.debug("apply_types_update() started")
+
 	old_types_data = deepcopy(old_types_data or {"version": 1, "types": []})
 	new_types_data = deepcopy(new_types_data or {"version": 1, "types": []})
+
+	logger.debug(f"old_types count = {len(old_types_data.get('types', []))}")
+	logger.debug(f"new_types count = {len(new_types_data.get('types', []))}")
 
 	old_types_data = refresh_modified_by_user_flags(old_types_data, old_defaults)
 
@@ -12904,38 +13007,142 @@ def apply_types_update(old_types_data: dict, old_defaults: dict, new_types_data:
 		if isinstance(t, dict) and t.get("name"):
 			current_map[t["name"]] = t
 
+	logger.debug(f"current_map names = {list(current_map.keys())}")
+
+	old_defaults_map = {}
+	for t in old_defaults.get("types", []):
+		if isinstance(t, dict) and t.get("name"):
+			old_defaults_map[t["name"]] = t
+
+	new_defaults_map = {}
+	for t in new_types_data.get("types", []):
+		if isinstance(t, dict) and t.get("name"):
+			new_defaults_map[t["name"]] = t
+
+	added_names = []
+	replaced_names = []
+	skipped_user_types = []
+	skipped_modified_defaults = []
+
 	for new_t in new_types_data.get("types", []):
+
 		if not isinstance(new_t, dict):
+			logger.debug(f"Skipping non-dict new type: {type(new_t)}")
 			continue
 
 		name = new_t.get("name")
+
 		if not name:
+			logger.debug("Skipping unnamed new type")
 			continue
+
+		logger.debug(f"Processing type: {name}")
 
 		if name not in current_map:
 			added = deepcopy(new_t)
 			added.setdefault("is_default", True)
 			added.setdefault("modified_by_user", False)
+
 			current_map[name] = added
+			added_names.append(name)
+
+			logger.info(f"Type added: {name}")
 			continue
 
 		cur_t = current_map[name]
 
+		cur_ini = cur_t.get("ini_code", "")
+		new_ini = new_t.get("ini_code", "")
+
+		old_default_ini = ""
+		if name in old_defaults_map:
+			old_default_ini = old_defaults_map[name].get("ini_code", "")
+
+		logger.debug(
+			f"Type '{name}': "
+			f"is_default={cur_t.get('is_default', False)}, "
+			f"modified_by_user={cur_t.get('modified_by_user', False)}"
+		)
+
+		if old_default_ini != cur_ini:
+			logger.debug(
+				f"[USER MODIFIED CHECK] {name}: "
+				f"current ini differs from old default"
+			)
+
+			log_ini_diff(
+				name,
+				old_default_ini,
+				cur_ini,
+				prefix="[USER CHANGES] "
+			)
+
+		if new_ini != old_default_ini:
+			logger.debug(
+				f"[DEFAULT UPDATE CHECK] {name}: "
+				f"new default differs from old default"
+			)
+
+			log_ini_diff(
+				name,
+				old_default_ini,
+				new_ini,
+				prefix="[DEFAULT UPDATE] "
+			)
+
 		if not cur_t.get("is_default", False):
+			skipped_user_types.append(name)
+			logger.info(f"Type skipped (user type): {name}")
 			continue
 
 		if cur_t.get("modified_by_user", False):
+			skipped_modified_defaults.append(name)
+
+			logger.info(f"Type skipped (modified by user): {name}")
+
+			log_ini_diff(
+				name,
+				old_default_ini,
+				cur_ini,
+				prefix="[SKIPPED USER MODIFIED] "
+			)
+
 			continue
 
 		merged = deepcopy(new_t)
 		merged["is_default"] = True
 		merged["modified_by_user"] = False
-		current_map[name] = merged
 
-	return {
-		"version": new_types_data.get("version", old_types_data.get("version", 1)),
+		current_map[name] = merged
+		replaced_names.append(name)
+
+		logger.info(f"Type replaced by new default: {name}")
+
+		log_ini_diff(
+			name,
+			cur_ini,
+			new_ini,
+			prefix="[REPLACED] "
+		)
+
+	result = {
+		"version": new_types_data.get(
+			"version",
+			old_types_data.get("version", 1)
+		),
 		"types": list(current_map.values())
 	}
+
+	logger.debug(
+		f"apply_types_update() done. "
+		f"total={len(result['types'])}, "
+		f"added={added_names}, "
+		f"replaced={replaced_names}, "
+		f"skipped_user={skipped_user_types}, "
+		f"skipped_modified={skipped_modified_defaults}"
+	)
+
+	return result
 
 
 def apply_templates_update(old_templates: list, new_templates: list) -> list:
@@ -12974,56 +13181,91 @@ def apply_defaults_update(new_defaults: dict) -> dict:
 
 
 def apply_data_update(cfg: dict, manifest: dict) -> bool:
+	logger.info("apply_data_update() started")
+
 	if not data_files_are_newer(cfg, manifest):
+		logger.info("Data update skipped: files are not newer")
 		return False
 
 	channel = (cfg.get("update_channel", "Main") or "Main").strip()
 	if channel not in UPDATE_CHANNELS:
+		logger.warning(f"Invalid update channel '{channel}', falling back to Main")
 		channel = "Main"
 
-	base_dir = (cfg.get("data_path") or "").strip()
+	base_dir = (cfg.get("data_path") or "Saves").strip()
 	if not base_dir:
-		base_dir = os.path.join(os.path.dirname(current_install_target()), "Data")
+		base_dir = os.path.join(os.path.dirname(current_install_target()), "Saves")
 
 	defaults_path = os.path.join(base_dir, "Defaults.json")
 	types_path = os.path.join(base_dir, "Types.json")
 	templates_path = os.path.join(base_dir, "Templates.json")
 
+	logger.debug(f"base_dir = {base_dir}")
+	logger.debug(f"defaults_path = {defaults_path}")
+	logger.debug(f"types_path = {types_path}")
+	logger.debug(f"templates_path = {templates_path}")
+
 	old_defaults = load_json_file(defaults_path, {})
 	old_types = load_json_file(types_path, {"version": 1, "types": []})
-	old_templates = load_json_any_file(templates_path, [])
+	old_templates = load_json_file(templates_path, [])
+
+	logger.debug(f"Loaded old_defaults keys = {list(old_defaults.keys()) if isinstance(old_defaults, dict) else type(old_defaults)}")
+	logger.debug(f"Loaded old_types count = {len(old_types.get('types', [])) if isinstance(old_types, dict) else 'N/A'}")
+	logger.debug(f"Loaded old_templates count = {len(old_templates) if isinstance(old_templates, list) else 'N/A'}")
 
 	defaults_url = build_public_data_file_url(cfg, channel, "Defaults.json")
 	types_url = build_public_data_file_url(cfg, channel, "Types.json")
 	templates_url = build_public_data_file_url(cfg, channel, "Templates.json")
 
+	logger.debug(f"defaults_url = {defaults_url}")
+	logger.debug(f"types_url = {types_url}")
+	logger.debug(f"templates_url = {templates_url}")
+
 	new_defaults = fetch_json_url(defaults_url)
 	new_types = fetch_json_url(types_url)
-	new_templates = load_json_any_file_from_url(templates_url)
+	new_templates = load_json_file_from_url(templates_url)
+
+	logger.debug(f"Fetched new_defaults keys = {list(new_defaults.keys()) if isinstance(new_defaults, dict) else type(new_defaults)}")
+	logger.debug(f"Fetched new_types count = {len(new_types.get('types', [])) if isinstance(new_types, dict) else 'N/A'}")
+	logger.debug(f"Fetched new_templates count = {len(new_templates) if isinstance(new_templates, list) else 'N/A'}")
 
 	backup_file(defaults_path)
 	backup_file(types_path)
 	backup_file(templates_path)
+	logger.info("Backups created")
 
 	final_defaults = apply_defaults_update(new_defaults)
 	final_types = apply_types_update(old_types, old_defaults, new_types)
 	final_templates = apply_templates_update(old_templates, new_templates)
 
-	save_json_file(defaults_path, final_defaults)
-	save_json_file(types_path, final_types)
-	save_json_file(templates_path, final_templates)
+	logger.debug(f"final_defaults type = {type(final_defaults)}")
+	logger.debug(f"final_types count = {len(final_types.get('types', [])) if isinstance(final_types, dict) else 'N/A'}")
+	logger.debug(f"final_templates count = {len(final_templates) if isinstance(final_templates, list) else 'N/A'}")
 
+	save_json_file(defaults_path, final_defaults)
+	logger.info("Saved Defaults.json")
+	save_json_file(types_path, final_types)
+	logger.info("Saved Types.json")
+	save_json_file(templates_path, final_templates)
+	logger.info("Saved Templates.json")
+
+	cfg["version"] = str(manifest.get("version", VERSION))
 	cfg["default_files_version"] = str(manifest.get("default_files_version", DEFAULT_FILES_VERSION))
 
 	try:
 		save_config(cfg)
+		logger.info("Config saved after data update")
 	except Exception as e:
-		logger.warning(f"Failed to Save Config after Data Update: {e}")
+		logger.warning(f"Failed to Save Config after Data Update: {e}", exc_info=True)
 
+	logger.info("apply_data_update() finished successfully")
+
+	editor.load_types()
+	editor.load_templates()
 	return True
 
 
-def load_json_any_file_from_url(url: str, timeout: int = 20):
+def load_json_file_from_url(url: str, timeout: int = 20):
 	req = Request(url, headers={"User-Agent": "MenuCreator-Updater/1.0"})
 	with urlopen(req, timeout=timeout) as resp:
 		payload = resp.read().decode("utf-8")
@@ -13038,45 +13280,72 @@ def auto_check_updates_on_startup(parent, cfg):
 		return
 
 	try:
-		manifest, _ = fetch_update_manifest(cfg, cfg.get("update_channel", "Main"))
+		manifest, manifest_url = fetch_update_manifest(cfg, cfg.get("update_channel", "Main"))
+		editor.pending_update = manifest
+		editor.pending_manifest_url = manifest_url
+		remote_version = manifest.get("version", "unknown")
 
-		# EXE update check
 		if manifest_is_newer(parse_version_build(VERSION), manifest):
-			remote_version = manifest.get("version", "unknown")
+			notes = manifest.get("notes", [])
+			if isinstance(notes, list):
+				notes_text = " | ".join(str(x) for x in notes[:6])
+			else:
+				notes_text = str(notes)
+
+			if dlg is not None:
+				dlg.update_status.setText(
+					f"Update Available: {remote_version}\n{notes_text}"
+				)
+
 			QMessageBox.information(
 				parent,
 				"Update Available",
-				f"An Update is Available: {remote_version}\nHead to the Setting Window to Proceed"
+				f"An Update is Available: {remote_version}\nHead to the Settings Window to Proceed"
+			)
+		else:
+			if dlg is not None:
+				dlg.update_status.setText(
+					f"Up to Date on {cfg.get('update_channel', 'Main')}."
+				)
+
+			QMessageBox.information(
+				parent,
+				"No Update",
+				"You are already on the Newest Build for this Channel."
 			)
 
-		# DATA update check
-		if data_files_are_newer(cfg, manifest):
-			try:
-				backup = create_data_backup()
-
-				logger.info(f"Created Data Backup: {backup}")
-
-				apply_data_update(cfg, manifest)
-				logger.info(
-					f"Data files updated to {manifest.get('default_files_version', 'unknown')}"
-				)
-			except Exception as e:
-				logger.error(f"Data update failed: {e}")
-
 	except Exception as e:
+		editor.pending_update = None
+		editor.pending_manifest_url = ""
+		editor.update_status.setText(f"Update Check failed: {e}")
+		QMessageBox.warning(parent, "Update Check Failed", str(e))
 		logger.info(f"Startup Update Check skipped/failed: {e}")
+		# DATA update check
+		#if data_files_are_newer(cfg, manifest):
+		#	try:
+		#		backup = create_data_backup()
+#
+		#		logger.info(f"Created Data Backup: {backup}")
+#
+		#		apply_data_update(cfg, manifest)
+		#		logger.info(
+		#			f"Data files updated to {manifest.get('default_files_version', 'unknown')}"
+		#		)
+		#	except Exception as e:
+		#		logger.error(f"Data update failed: {e}")
 
 
 def cleanup_updater_temp():
 	base = tempfile.gettempdir()
+	folder = os.path.join(base, "MenuCreatorUpdates")
 
-	file_path = os.path.join(base, "MenuCreatorUpdates", "MCreatorV2.exe")
-
-	try:
-		if os.path.exists(file_path):
-			os.remove(file_path)
-	except Exception:
-		pass
+	for name in ("menu_creator_update_helper.bat", "menu_creator_update_log.txt", "MCreatorV2.exe"):
+		try:
+			path = os.path.join(folder, name)
+			if os.path.exists(path):
+				os.remove(path)
+		except Exception:
+			pass
 
 # ---------------- SETTINGS DIALOG ----------------
 
@@ -13156,10 +13425,10 @@ class SettingsDialog(QDialog):
 		self.update_channel.setCurrentText(cfg.get("update_channel", "Main"))
 		update_layout.addRow("Channel:", self.update_channel)
 
-		self.update_owner = QLineEdit(cfg.get("update_owner", ""))
+		self.update_owner = QLineEdit(cfg.get("update_owner", "NurarihyonMaou"))
 		update_layout.addRow("GitHub Owner:", self.update_owner)
 
-		self.update_repo = QLineEdit(cfg.get("update_repo", ""))
+		self.update_repo = QLineEdit(cfg.get("update_repo", "MenuCreator"))
 		update_layout.addRow("GitHub Repo:", self.update_repo)
 
 		self.update_manifest_path = QLineEdit(cfg.get("update_manifest_path", UPDATE_MANIFEST_PATH_DEFAULT))
@@ -13176,7 +13445,7 @@ class SettingsDialog(QDialog):
 		update_layout.addRow("Private Code:", self.update_private_code)
 
 		self.update_auto_check = QCheckBox("Check Updates on Start-Up")
-		self.update_auto_check.setChecked(cfg.get("update_auto_check", False))
+		self.update_auto_check.setChecked(cfg.get("update_auto_check", True))
 		update_layout.addRow("Auto Check:", self.update_auto_check)
 
 		self.update_status = QLabel("No Update Check yet.")
@@ -13360,7 +13629,49 @@ class SettingsDialog(QDialog):
 
 			target_path = current_install_target()
 			create_update_backup(target_path)
-			install_staged_update(staged_path, target_path)
+			#install_staged_update(staged_path, target_path)
+
+			target_path = current_install_target()
+			create_update_backup(target_path)
+
+			if editor:
+				# DATA update check
+				if data_files_are_newer(cfg, manifest):
+					try:
+						backup = create_data_backup()
+
+						logger.info(f"Created Data Backup: {backup}")
+
+						apply_data_update(cfg, manifest)
+						logger.info(
+							f"Data files updated to {manifest.get('default_files_version', DEFAULT_FILES_VERSION)}"
+						)
+					except Exception as e:
+						logger.error(f"Data update failed: {e}")
+
+				editor.pending_update_install = {
+					"staged_path": staged_path,
+					"target_path": target_path,
+					"extra_args": [],
+				}
+			else:
+				# awaryjnie, gdyby nie było głównego okna
+				install_staged_update(staged_path, target_path)
+
+				# DATA update check
+				if data_files_are_newer(cfg, manifest):
+					try:
+						backup = create_data_backup()
+
+						logger.info(f"Created Data Backup: {backup}")
+
+						apply_data_update(cfg, manifest)
+						logger.info(
+							f"Data files updated to {manifest.get('default_files_version', DEFAULT_FILES_VERSION)}"
+						)
+					except Exception as e:
+						logger.error(f"Data update failed: {e}")
+
 			self.update_status.setText("Update Downloaded. It will Install after the App closes.")
 			QMessageBox.information(
 				self,
@@ -13400,19 +13711,17 @@ class SettingsDialog(QDialog):
 
 
 def open_config_editor():
-	dlg = SettingsDialog(cfg, app)
 	dlg.exec()
 
 
 if __name__ == "__main__":
 	editor = None
 
-	if maybe_apply_update_from_cli():
-		sys.exit(0)
-
 	cfg = load_config()
 	check_failed_update()
 	app = init_app(cfg)
+
+	dlg = SettingsDialog(cfg, app)
 
 	editor = MenuEditor()
 	editor.showMaximized()
@@ -13423,7 +13732,7 @@ if __name__ == "__main__":
 
 	editor.outliner.rebuild_outliner()
 
-	QTimer.singleShot(1200, lambda: auto_check_updates_on_startup(editor, cfg))
+	QTimer.singleShot(250, lambda: auto_check_updates_on_startup(editor, cfg))
 
 	help_shortcut = QShortcut(QKeySequence(editor.keybinds.get("help")), editor)
 	help_shortcut.setContext(Qt.ApplicationShortcut)
